@@ -62,31 +62,14 @@ A security tool that prevents git pushes from sanctioned countries and provides 
 # Basic installation (git hooks only)
 ./install.sh
 
-# Install with system-wide helper
+# Install with system-wide helper (requires sudo)
 ./install.sh --install-helper
-
-# Silent installation (no prompts)
-./install.sh --silent
-
-# Show help
-./install.sh --help
-```
-
-### Set up IP Tracking Service
-
-For automatic IP location tracking:
-
-```bash
-# Create the LaunchAgent
-mkdir -p ~/Library/LaunchAgents
-cp com.user.ipcheck.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.user.ipcheck.plist
 ```
 
 ### Configure Terminal Visual Indicator (Optional)
 
-If you're using Starship, the visual indicator is already configured in your `~/.config/starship.toml`.
-Your prompt will show your current country code.
+If you're using Starship, you can configure a visual indicator in your `~/.config/starship.toml`.
+The indicator can show your current location when needed.
 
 ## Uninstallation
 
@@ -96,18 +79,15 @@ To completely remove Git IP Guard:
 chmod +x uninstall.sh
 ./uninstall.sh
 
-# Also remove the LaunchAgent
-launchctl unload ~/Library/LaunchAgents/com.user.ipcheck.plist
-rm ~/Library/LaunchAgents/com.user.ipcheck.plist
 ```
 
 ## Usage
 
 Once installed:
 
-1. The system will automatically track your IP location every 5 minutes
+1. When you run `git push`, the system checks your IP location on-demand
 2. Git pushes will be blocked if you're in a sanctioned country
-3. Your terminal prompt will show your location status
+3. The hook displays your location with country flag for transparency
 
 ### Testing
 
@@ -119,8 +99,7 @@ To test the blocking functionality without needing a real remote:
 
 To manually test with different locations:
 1. Switch to a VPN location (try a sanctioned country like Russia)
-2. Update the IP cache: `curl -s https://ipinfo.io > /tmp/git_ip_cache`
-3. Run the test script again
+2. Run the test script again
 
 ## Sanctioned Countries/Regions
 
@@ -211,16 +190,16 @@ Note: After global disable, new repositories won't have the IP check, but existi
 
 ## Troubleshooting
 
-### IP cache not found error
+### Connection or IP detection errors
 
-- Check if the LaunchAgent is running: `launchctl list | grep ipcheck`
-- Manually update the cache: `curl -s https://ipinfo.io > /tmp/git_ip_cache`
+- Check your internet connection
+- Try the push again (the hook includes automatic retry logic)
+- Use `SKIP_IP_CHECK=1 git push` if you need to bypass temporarily
 
 ### Visual indicator not showing
 
-- Ensure Starship is properly configured
-- Check if `/tmp/git_ip_cache` exists
-- Reload your shell configuration: `source ~/.zshrc`
+- Ensure Starship is properly configured (if using)
+- The country flag is shown during git push operations
 
 ### Hook not triggering
 

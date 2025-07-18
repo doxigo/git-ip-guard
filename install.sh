@@ -14,7 +14,6 @@ echo ""
 
 # Parse command line arguments
 INSTALL_HELPER=false
-SILENT=false
 
 for arg in "$@"; do
     case $arg in
@@ -22,17 +21,16 @@ for arg in "$@"; do
             INSTALL_HELPER=true
             shift
             ;;
-        --silent)
-            SILENT=true
-            shift
-            ;;
-        --help)
+        --help|-h)
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
             echo "  --install-helper    Also install git-ip-check helper to /usr/local/bin (requires sudo)"
-            echo "  --silent           Silent installation without prompts"
-            echo "  --help             Show this help message"
+            echo "  --help, -h         Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0                     # Basic installation"
+            echo "  $0 --install-helper    # Install with system-wide helper"
             exit 0
             ;;
     esac
