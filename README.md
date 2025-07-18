@@ -6,11 +6,12 @@ A security tool that prevents git pushes from sanctioned countries and provides 
 
 - 🛡️ Blocks git push operations from sanctioned countries
 - 🚦 Visual indicator in terminal showing your location status
-- 📍 Automatic IP location detection with background updates
-- 🎨 Color-coded terminal prompts
+- 📍 Automatic IP location detection with country flag display
+- 🎨 Color-coded terminal prompts with clear feedback
+- 🌍 Shows country flags for visual location confirmation (🇳🇴 🇺🇸 🇬🇧 etc.)
 - 🔧 Easy installation and uninstallation
 - 📦 Works with both new and existing repositories
-- 🧪 Includes test script to verify functionality without actual push
+- 🧪 Comprehensive test suite for all features
 
 ## Requirements
 
@@ -42,10 +43,17 @@ A security tool that prevents git pushes from sanctioned countries and provides 
    ./install.sh
    ```
 
-4. For existing repositories, initialize them with the new template:
+4. For existing repositories, you have two options:
+   
+   **Option A**: Apply to individual repos
    ```bash
    cd /path/to/your/repo
    git init
+   ```
+   
+   **Option B**: Bulk apply to multiple repos
+   ```bash
+   ./apply-to-existing-repos.sh
    ```
 
 ### Installation Options
@@ -130,32 +138,30 @@ Git pushes are blocked from:
 
 ## Testing
 
-Run the test script to verify your IP and check if pushes are allowed:
+Run the comprehensive test suite:
 
 ```bash
-./test-push.sh
+./test.sh          # Run all tests
+./test.sh current  # Test current location only
+./test.sh bypass   # Test bypass mechanisms
+./test.sh helper   # Test git-ip-check helper
 ```
 
-This will show your current location and whether git pushes would be allowed or blocked.
-
-To test the bypass mechanisms:
-
-```bash
-./test-bypass.sh
-```
-
-This will verify that all three bypass methods (environment variable, repo config, and global disable) work correctly.
+The test will show:
+- Your current location with country flag
+- Whether pushes are allowed or blocked
+- Verification of all bypass methods
 
 ## How It Works
 
-1. A LaunchAgent runs every 5 minutes to check your IP location using ipinfo.io
-2. The location data is cached in `/tmp/git_ip_cache`
-3. When you run `git push`, the pre-push hook checks this cache
-4. It verifies if your country is in the sanctioned list
-5. If not sanctioned, the push proceeds normally
-6. If sanctioned, the push is rejected with an error message
+1. When you run `git push`, the pre-push hook checks your IP location
+2. Uses `ifconfig.co` as primary service (more reliable, provides ISO country codes)
+3. Automatically falls back to `ipinfo.io` if primary service is unavailable
+4. Verifies if your country is in the sanctioned list
+5. If not sanctioned, the push proceeds normally with country flag display
+6. If sanctioned, the push is rejected with clear error message and location info
 7. Special handling for Ukraine to check specific regions
-8. Your terminal prompt displays your location status (if configured)
+8. Fails securely - blocks push if location cannot be determined
 
 ## Disabling/Bypassing IP Checks
 
@@ -229,10 +235,10 @@ If you're using a VPN, the detected country will be the VPN server's location, n
 
 - This is a client-side check and can be bypassed by modifying the hook
 - For server-side enforcement, implement similar checks in your Git server
-- The hook uses ipinfo.io as primary service with automatic fallback to ifconfig.co to handle rate limits
+- The hook uses ifconfig.co as primary service with automatic fallback to ipinfo.io
 - IP detection services have rate limits for free usage, but the helper includes retry logic
 - **Important**: The system fails securely - if IP location cannot be determined (e.g., due to service blocking certain countries), the push is blocked for security reasons
-- Some IP services (like ipinfo.io) may block requests from certain countries (e.g., Iran), which will result in blocked pushes from those locations
+- The system shows country flags and location details for better user feedback
 
 ## Contributing
 
@@ -243,9 +249,11 @@ Pull requests are welcome! Please feel free to submit improvements.
 ### Rate Limit Handling
 
 The git-ip-check helper includes automatic fallback to alternative IP services:
-1. Primary: `ifconfig.co/json` (more reliable, less restrictive)
-2. Fallback: `ipinfo.io/json` (may block certain countries)
+1. Primary: `ifconfig.co/json` (provides ISO country codes, more reliable)
+2. Fallback: `ipinfo.io/json` (automatic switch when primary is unavailable)
 3. Retry logic with delays
+4. Country flag display for visual feedback (🇳🇴, 🇺🇸, 🇬🇧, etc.)
+5. Handles both ISO codes and full country names
 
 This ensures the IP check continues working even during rate limiting.
 
@@ -255,7 +263,7 @@ The `git-ip-check` script can be installed system-wide for use in multiple hooks
 
 ```bash
 # Install to /usr/local/bin (requires sudo)
-sudo ./install-helper.sh
+./install.sh --install-helper
 
 # Use in any git hook
 git-ip-check "/path/to/config.json"
@@ -279,14 +287,41 @@ This allows you to:
 - Share the same IP checking logic across multiple git operations
 - Maintain consistent security policies
 
+### Bulk Apply to Existing Repositories
+
+The `apply-to-existing-repos.sh` script helps you apply Git IP Guard to multiple existing repositories:
+
+**Interactive mode** (recommended):
+```bash
+./apply-to-existing-repos.sh
+```
+
+This will prompt you to:
+1. Search common development directories
+2. Search from current directory
+3. Specify a custom directory
+
+**Command line mode**:
+```bash
+# Apply to specific directories
+./apply-to-existing-repos.sh ~/Projects ~/Work
+
+# Apply to all repos under current directory
+./apply-to-existing-repos.sh .
+```
+
+The script:
+- Finds all Git repositories in specified directories
+- Asks before overwriting existing hooks
+- Uses `git init` to properly apply the template
+- Shows progress and summary
+
 ## Future Improvements
 
 ### Country List Management
 
 The allowed/blocked country lists can be managed via:
 1. Direct editing of `ip-check-config.json`
-2. Remote configuration downloads (for enterprise setups)
-3. Dynamic updates based on compliance requirements
 
 ### Integration with CI/CD
 
