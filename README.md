@@ -2,6 +2,14 @@
 
 A security tool that prevents git pushes from sanctioned countries and provides visual indicators in your terminal.
 
+## Screenshots
+
+### ✅ Push Allowed
+![Git push allowed from safe location](git-ip-guard--allowed.png)
+
+### ⛔ Push Blocked
+![Git push blocked from sanctioned location](git-ip-guard--blocked.png)
+
 ## Features
 
 - 🛡️ Blocks git push operations from sanctioned countries
