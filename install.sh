@@ -360,45 +360,58 @@ get_country_flag() {
     esac
 }
 
-# File containing IP info
-IP_CACHE="/tmp/git_ip_cache"
+# Get IP info on-demand
+IP_INFO=$(curl -s --connect-timeout 5 --max-time 10 https://ifconfig.co/json 2>/dev/null)
 
-# Check if IP cache file exists
-if [[ ! -f $IP_CACHE ]]; then
-  echo "IP cache file not found. Cannot proceed with push."
-  exit 1
+# Check if primary service failed, try fallback
+if [ -z "$IP_INFO" ] || echo "$IP_INFO" | grep -q "Forbidden" || echo "$IP_INFO" | grep -q "Rate limit"; then
+    echo -e "\033[0;33mPrimary IP service unavailable, trying fallback...\033[0m" >&2
+    IP_INFO=$(curl -s --connect-timeout 5 --max-time 10 https://ipinfo.io/json 2>/dev/null)
 fi
 
-# Get country from cache
-COUNTRY=$(jq -r .country < $IP_CACHE)
+# Check if we got valid response
+if [ -z "$IP_INFO" ] || echo "$IP_INFO" | grep -q "Forbidden"; then
+    echo -e "\033[0;31m⛔ Error: Could not detect IP information.\033[0m"
+    echo -e "\033[0;31mFor security reasons, operations from unverifiable locations are blocked.\033[0m"
+    exit 1
+fi
 
-# List of sanctioned countries/regions
-# BY: Belarus, CU: Cuba, IR: Iran, KP: North Korea, RU: Russia, SY: Syria
-# UA regions are handled separately by checking city/region
+# Extract country (handle both ifconfig.co and ipinfo.io formats)
+COUNTRY=$(echo "$IP_INFO" | jq -r '.country_iso // .country // empty' 2>/dev/null | tr '[:lower:]' '[:upper:]')
+
+# Validate country
+if [ -z "$COUNTRY" ] || [ "$COUNTRY" = "null" ]; then
+    echo -e "\033[0;31m⛔ Error: Could not determine country.\033[0m"
+    echo -e "\033[0;31mFor security reasons, operations from unverifiable locations are blocked.\033[0m"
+    exit 1
+fi
+
+# List of sanctioned countries
 SANCTIONED_COUNTRIES=(BY CU IR KP RU SY)
 
 # Check if country is sanctioned
 if [[ " ${SANCTIONED_COUNTRIES[@]} " =~ " $COUNTRY " ]]; then
-  echo "⛔ Git push blocked: Access denied from sanctioned country: $COUNTRY"
-  exit 1
+    COUNTRY_FLAG=$(get_country_flag "$COUNTRY")
+    echo -e "\033[0;31m⛔ Git push blocked: Access denied from sanctioned country: $COUNTRY_FLAG $COUNTRY\033[0m"
+    exit 1
 fi
 
-# Special check for sanctioned regions of Ukraine
+# Special check for Ukraine regions
 if [[ "$COUNTRY" == "UA" ]]; then
-  REGION=$(jq -r .region < $IP_CACHE | tr '[:upper:]' '[:lower:]')
-  CITY=$(jq -r .city < $IP_CACHE | tr '[:upper:]' '[:lower:]')
-  
-  # Check for sanctioned regions
-  if [[ "$REGION" =~ (crimea|donetsk|luhansk) ]] || [[ "$CITY" =~ (crimea|donetsk|luhansk|sevastopol|simferopol) ]]; then
-    echo "⛔ Git push blocked: Access denied from sanctioned region: $REGION/$CITY"
-    exit 1
-  fi
+    REGION=$(echo "$IP_INFO" | jq -r '.region // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    CITY=$(echo "$IP_INFO" | jq -r '.city // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    
+    if [[ "$REGION" =~ (crimea|donetsk|luhansk) ]] || [[ "$CITY" =~ (crimea|donetsk|luhansk|sevastopol|simferopol) ]]; then
+        echo -e "\033[0;31m⛔ Git push blocked: Access denied from sanctioned region: $REGION/$CITY\033[0m"
+        exit 1
+    fi
 fi
 
 # If we reach here, the push is allowed
 COUNTRY_FLAG=$(get_country_flag "$COUNTRY")
-    if [ "$COUNTRY_FLAG" = "🏳️" ]; then COUNTRY_FLAG=""; fi
-echo "✅ Location verified: $COUNTRY_FLAG $COUNTRY - Push allowed"
+if [ "$COUNTRY_FLAG" = "🏳️" ]; then COUNTRY_FLAG=""; fi
+echo -e "\033[0;32m✅ Location verified: $COUNTRY_FLAG $COUNTRY - Push allowed\033[0m"
+
 EOF
 
 # Make the hook executable
