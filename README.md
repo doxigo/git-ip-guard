@@ -2,6 +2,16 @@
 
 A security tool that prevents git pushes from sanctioned countries and provides visual indicators in your terminal.
 
+## Context
+
+There have been a lot of issues for developers living in sanctioned countries, which is quite unfortunate since they don't really have anything to do with the political side of things.
+
+Git IP Guard - a tool that enforces location-based restrictions on git pushes. While it's important to comply with regulations, it's equally important to remember that behind every blocked push is a developer trying to contribute to open source, learn, or simply do their job.
+
+The tool includes bypass mechanisms because sometimes compliance requirements conflict with humanitarian considerations. It's transparent about what it's doing (showing your location with country flags) and provides clear options for exceptions.
+
+This isn't a celebration of restrictions, but rather a technical implementation of an unfortunate reality. I hope for a future where such tools become unnecessary and all developers can contribute freely regardless of their geography.
+
 ## Screenshots
 
 ### ✅ Push Allowed
