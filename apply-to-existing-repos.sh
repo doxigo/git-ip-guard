@@ -12,19 +12,30 @@ echo -e "${BLUE}  Apply Git IP Guard to Existing Repos  ${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
+# Check for force flag
+FORCE_UPDATE=false
+if [[ "$1" == "--force" ]] || [[ "$1" == "-f" ]]; then
+    FORCE_UPDATE=true
+    shift  # Remove the flag from arguments
+    echo -e "${YELLOW}Force update mode: Will overwrite existing hooks${NC}"
+    echo ""
+fi
+
 # Function to apply template to a repository
 apply_to_repo() {
     local git_dir="$1"
     local repo_dir="${git_dir%/.git}"
     
     # Check if hook already exists
-    if [ -f "$git_dir/hooks/pre-push" ]; then
+    if [ -f "$git_dir/hooks/pre-push" ] && [ "$FORCE_UPDATE" != "true" ]; then
         echo -e "  ${YELLOW}⚠️  Pre-push hook already exists in $repo_dir${NC}"
         echo -n "     Overwrite? (y/N): "
-        read -r response
+        read -r response < /dev/tty
         if [[ ! "$response" =~ ^[Yy]$ ]]; then
             return 1
         fi
+    elif [ -f "$git_dir/hooks/pre-push" ] && [ "$FORCE_UPDATE" = "true" ]; then
+        echo -e "  ${YELLOW}⟳ Updating existing hook in $repo_dir${NC}"
     fi
     
     # Apply the template
@@ -48,7 +59,7 @@ if [ $# -eq 0 ]; then
     echo "4) Exit"
     echo ""
     echo -n "Enter choice (1-4): "
-    read -r choice
+    read -r choice < /dev/tty
     
     case $choice in
         1)
@@ -71,7 +82,7 @@ if [ $# -eq 0 ]; then
             ;;
         3)
             echo -n "Enter directory path: "
-            read -r custom_dir
+            read -r custom_dir < /dev/tty
             if [ -d "$custom_dir" ]; then
                 SEARCH_DIRS=("$custom_dir")
             else
