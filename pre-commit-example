@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Example pre-commit hook that uses the git-ip-check helper
+# This can be used to prevent commits from certain locations
+
+# Look for git-ip-check in multiple locations
+GIT_IP_CHECK=""
+if [ -x "/usr/local/bin/git-ip-check" ]; then
+    GIT_IP_CHECK="/usr/local/bin/git-ip-check"
+elif [ -x "$(dirname "$0")/git-ip-check" ]; then
+    GIT_IP_CHECK="$(dirname "$0")/git-ip-check"
+else
+    echo "Error: git-ip-check helper not found"
+    exit 1
+fi
+
+# Use the git-ip-check helper
+CONFIG_FILE="$(dirname "$0")/ip-check-config.json"
+
+# Use a different environment variable for pre-commit bypass
+# This allows separate control of commit vs push restrictions
+"$GIT_IP_CHECK" "$CONFIG_FILE" "COMMIT_IPCHECK_BYPASS" "ipcheck.disable.commit"
+
+# Exit with the same code as git-ip-check
+exit $?

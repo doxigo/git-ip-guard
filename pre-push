@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Git pre-push hook that uses the git-ip-check helper
+
+# Look for git-ip-check in multiple locations
+GIT_IP_CHECK=""
+if [ -x "/usr/local/bin/git-ip-check" ]; then
+    GIT_IP_CHECK="/usr/local/bin/git-ip-check"
+elif [ -x "$(dirname "$0")/git-ip-check" ]; then
+    GIT_IP_CHECK="$(dirname "$0")/git-ip-check"
+else
+    # Try to find it in the same directory as this script
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -x "$SCRIPT_DIR/git-ip-check" ]; then
+        GIT_IP_CHECK="$SCRIPT_DIR/git-ip-check"
+    fi
+fi
+
+# If git-ip-check is not found, fall back to inline implementation
+if [ -z "$GIT_IP_CHECK" ]; then
+    echo "Warning: git-ip-check helper not found, using inline implementation"
+    
+    # Source the git-ip-check script if available in the git-ip-guard directory
+    GIT_IP_GUARD_DIR="$(dirname "$0")/../../../git-ip-guard"
+    if [ -f "$GIT_IP_GUARD_DIR/git-ip-check" ]; then
+        source "$GIT_IP_GUARD_DIR/git-ip-check"
+        CONFIG_FILE="$(dirname "$0")/ip-check-config.json"
+        check_ip_location "$CONFIG_FILE"
+        exit $?
+    else
+        echo "Error: Cannot find git-ip-check implementation"
+        exit 1
+    fi
+fi
+
+# Use the git-ip-check helper
+CONFIG_FILE="$(dirname "$0")/ip-check-config.json"
+"$GIT_IP_CHECK" "$CONFIG_FILE"
+exit $?

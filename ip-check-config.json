@@ -1,0 +1,10 @@
+{
+  "allowed_countries": [
+    "US", "CA", "MX", "BR", "AR", "CL", "CO", "PE", "VE", "UY", "PY", "EC", "BO", "GY", "SR", "GF",
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV",
+    "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "GB", "NO", "CH", "IS", "LI",
+    "AD", "MC", "SM", "VA", "BA", "AL", "ME", "RS", "MK", "XK", "MD", "UA", "TR"
+  ],
+  "blocked_countries": ["BY", "CU", "IR", "KP", "RU", "SY"],
+  "description": "Quick setup: Europe + Americas allowed, sanctioned countries blocked"
+}
