@@ -224,6 +224,8 @@ If you see this error after updating Git IP Guard:
 
 - For new repos: The hook is automatically installed via git templates
 - For existing repos: Run `git init` in the repository to apply the template
+- **Important**: Both `pre-push` and `ip-check-config.json` must be present in `.git/hooks/`
+- If `ip-check-config.json` is missing, use `./apply-to-existing-repos.sh --force` instead of `git init`
 
 ### False positives with VPN
 

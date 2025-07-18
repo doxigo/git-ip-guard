@@ -54,13 +54,23 @@ apply_to_repo() {
         echo -e "  ${YELLOW}⟳ Updating existing hook in $repo_dir${NC}"
     fi
     
-    # Apply the template
-    cd "$repo_dir" && git init >/dev/null 2>&1
-    if [ $? -eq 0 ]; then
+    # Create hooks directory if it doesn't exist
+    mkdir -p "$git_dir/hooks"
+    
+    # Copy the pre-push hook
+    if cp "$HOME/.git-templates/hooks/pre-push" "$git_dir/hooks/pre-push" 2>/dev/null; then
+        chmod +x "$git_dir/hooks/pre-push"
+    else
+        echo -e "  ${RED}❌ Failed to copy pre-push hook to: $repo_dir${NC}"
+        return 1
+    fi
+    
+    # Copy the config file
+    if cp "$HOME/.git-templates/hooks/ip-check-config.json" "$git_dir/hooks/ip-check-config.json" 2>/dev/null; then
         echo -e "  ${GREEN}✅ Applied to: $repo_dir${NC}"
         return 0
     else
-        echo -e "  ${RED}❌ Failed to apply to: $repo_dir${NC}"
+        echo -e "  ${RED}❌ Failed to copy config file to: $repo_dir${NC}"
         return 1
     fi
 }
