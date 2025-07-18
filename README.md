@@ -5,7 +5,6 @@ A security tool that prevents git pushes from sanctioned countries and provides 
 ## Features
 
 - 🛡️ Blocks git push operations from sanctioned countries
-- 🚦 Visual indicator in terminal showing your location status
 - 📍 Automatic IP location detection with country flag display
 - 🎨 Color-coded terminal prompts with clear feedback
 - 🌍 Shows country flags for visual location confirmation (🇳🇴 🇺🇸 🇬🇧 etc.)
@@ -20,7 +19,6 @@ A security tool that prevents git pushes from sanctioned countries and provides 
 - Bash/Zsh shell
 - `jq` (JSON processor)
 - `curl` (for IP detection)
-- Starship prompt (optional, for visual indicators)
 
 ## Installation
 
@@ -66,10 +64,6 @@ A security tool that prevents git pushes from sanctioned countries and provides 
 ./install.sh --install-helper
 ```
 
-### Configure Terminal Visual Indicator (Optional)
-
-If you're using Starship, you can configure a visual indicator in your `~/.config/starship.toml`.
-The indicator can show your current location when needed.
 
 ## Uninstallation
 
@@ -196,10 +190,6 @@ Note: After global disable, new repositories won't have the IP check, but existi
 - Try the push again (the hook includes automatic retry logic)
 - Use `SKIP_IP_CHECK=1 git push` if you need to bypass temporarily
 
-### Visual indicator not showing
-
-- Ensure Starship is properly configured (if using)
-- The country flag is shown during git push operations
 
 ### Hook not triggering
 
