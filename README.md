@@ -69,7 +69,11 @@ This isn't a celebration of restrictions, but rather a technical implementation 
    
    **Option B**: Bulk apply to multiple repos
    ```bash
+   # Interactive mode - will prompt before overwriting existing hooks
    ./apply-to-existing-repos.sh
+   
+   # Force update mode - automatically overwrites existing hooks
+   ./apply-to-existing-repos.sh --force
    ```
 
 ### Installation Options
@@ -202,6 +206,13 @@ Note: After global disable, new repositories won't have the IP check, but existi
 
 ## Troubleshooting
 
+### "IP cache file not found" error
+
+If you see this error after updating Git IP Guard:
+- You have an outdated `git-ip-check` helper installed
+- Solution: Update the helper with `sudo ./install.sh --install-helper`
+- Alternative: Remove it with `sudo rm /usr/local/bin/git-ip-check`
+
 ### Connection or IP detection errors
 
 - Check your internet connection
@@ -297,11 +308,21 @@ This will prompt you to:
 ./apply-to-existing-repos.sh .
 ```
 
+**Force update mode** (skip confirmation prompts):
+```bash
+# Force update in interactive mode
+./apply-to-existing-repos.sh --force
+
+# Force update specific directories
+./apply-to-existing-repos.sh -f ~/Projects ~/Work
+```
+
 The script:
 - Finds all Git repositories in specified directories
-- Asks before overwriting existing hooks
+- Asks before overwriting existing hooks (unless `--force` is used)
 - Uses `git init` to properly apply the template
 - Shows progress and summary
+- Supports `--help` flag for usage information
 
 ## Future Improvements
 

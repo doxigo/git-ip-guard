@@ -12,6 +12,22 @@ echo -e "${BLUE}  Apply Git IP Guard to Existing Repos  ${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
+# Check for help flag
+if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    echo "Usage: $0 [OPTIONS] [DIRECTORIES...]"
+    echo ""
+    echo "Options:"
+    echo "  --force, -f    Force update all hooks without prompting"
+    echo "  --help, -h     Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                    # Interactive mode"
+    echo "  $0 --force            # Force update in interactive mode"
+    echo "  $0 ~/Projects         # Apply to specific directory"
+    echo "  $0 -f ~/Projects      # Force update specific directory"
+    exit 0
+fi
+
 # Check for force flag
 FORCE_UPDATE=false
 if [[ "$1" == "--force" ]] || [[ "$1" == "-f" ]]; then
