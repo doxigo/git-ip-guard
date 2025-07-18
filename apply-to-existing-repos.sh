@@ -57,16 +57,24 @@ apply_to_repo() {
     # Create hooks directory if it doesn't exist
     mkdir -p "$git_dir/hooks"
     
-    # Copy the pre-push hook
-    if cp "$HOME/.git-templates/hooks/pre-push" "$git_dir/hooks/pre-push" 2>/dev/null; then
+    # Get the directory where this script is located
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    
+    # Copy the pre-push hook from the current directory
+    if cp "$script_dir/pre-push" "$git_dir/hooks/pre-push" 2>/dev/null; then
         chmod +x "$git_dir/hooks/pre-push"
     else
         echo -e "  ${RED}❌ Failed to copy pre-push hook to: $repo_dir${NC}"
         return 1
     fi
     
-    # Copy the config file
-    if cp "$HOME/.git-templates/hooks/ip-check-config.json" "$git_dir/hooks/ip-check-config.json" 2>/dev/null; then
+    # Copy the config file from the current directory
+    if cp "$script_dir/ip-check-config.json" "$git_dir/hooks/ip-check-config.json" 2>/dev/null; then
+        # Also copy the git-ip-check helper if it exists
+        if [ -f "$script_dir/git-ip-check" ]; then
+            cp "$script_dir/git-ip-check" "$git_dir/hooks/git-ip-check" 2>/dev/null
+            chmod +x "$git_dir/hooks/git-ip-check" 2>/dev/null
+        fi
         echo -e "  ${GREEN}✅ Applied to: $repo_dir${NC}"
         return 0
     else
@@ -130,9 +138,11 @@ else
     SEARCH_DIRS=("$@")
 fi
 
-# Check if git templates are installed
-if [ ! -d "$HOME/.git-templates/hooks" ]; then
-    echo -e "${RED}Error: Git templates not found. Please run ./install.sh first.${NC}"
+# Check if required files exist in the current directory
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$script_dir/pre-push" ] || [ ! -f "$script_dir/ip-check-config.json" ]; then
+    echo -e "${RED}Error: Required files (pre-push, ip-check-config.json) not found in current directory.${NC}"
+    echo -e "${RED}Please make sure you're running this script from the git-ip-guard directory.${NC}"
     exit 1
 fi
 
@@ -156,7 +166,7 @@ for dir in "${SEARCH_DIRS[@]}"; do
                     ((skipped++))
                 fi
             fi
-        done < <(find "$dir" -name ".git" -type d -prune 2>/dev/null | head -50)
+        done < <(find "$dir" -name ".git" -type d -prune 2>/dev/null)
     else
         echo -e "${YELLOW}Skipping non-existent directory: $dir${NC}"
     fi
