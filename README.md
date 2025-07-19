@@ -44,7 +44,7 @@ This isn't a celebration of restrictions, but rather a technical implementation 
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/git-ip-guard.git
+   git clone https://github.com/doxigo/git-ip-guard.git
    cd git-ip-guard
    ```
 
@@ -60,18 +60,18 @@ This isn't a celebration of restrictions, but rather a technical implementation 
    ```
 
 4. For existing repositories, you have two options:
-   
+
    **Option A**: Apply to individual repos
    ```bash
    cd /path/to/your/repo
    git init
    ```
-   
+
    **Option B**: Bulk apply to multiple repos
    ```bash
    # Interactive mode - will prompt before overwriting existing hooks
    ./apply-to-existing-repos.sh
-   
+
    # Force update mode - automatically overwrites existing hooks
    ./apply-to-existing-repos.sh --force
    ```
