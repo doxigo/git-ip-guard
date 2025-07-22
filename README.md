@@ -29,6 +29,7 @@ This isn't a celebration of restrictions, but rather a technical implementation 
 - 🔧 Easy installation and uninstallation
 - 📦 Works with both new and existing repositories
 - 🧪 Comprehensive test suite for all features
+- 📊 `git-ip-info` command to check your IP and Git configuration
 
 ## Requirements
 
@@ -86,6 +87,22 @@ This isn't a celebration of restrictions, but rather a technical implementation 
 ./install.sh --install-helper
 ```
 
+### Installing the git-ip-info Command
+
+The `git-ip-info` command provides a quick way to check your current IP location and Git configuration:
+
+```bash
+# Make the script executable
+chmod +x git-ip-info
+
+# Install system-wide (requires sudo)
+sudo cp git-ip-info /usr/local/bin/
+sudo chmod +x /usr/local/bin/git-ip-info
+
+# Now you can use it from anywhere
+git-ip-info
+```
+
 
 ## Uninstallation
 
@@ -104,6 +121,21 @@ Once installed:
 1. When you run `git push`, the system checks your IP location on-demand
 2. Git pushes will be blocked if you're in a sanctioned country
 3. The hook displays your location with country flag for transparency
+
+### Checking Your IP and Git Configuration
+
+Use the `git-ip-info` command to quickly check your current IP location and Git configuration:
+
+```bash
+git-ip-info
+```
+
+This command displays:
+- Your Git user name and email (both global and local if in a repository)
+- Your current IP address and location with country flag
+- ISP/Organization information
+- Git IP Guard status (whether your location is restricted)
+- Any active bypass settings
 
 ### Testing
 
@@ -257,8 +289,9 @@ The git-ip-check helper includes automatic fallback to alternative IP services:
 
 This ensures the IP check continues working even during rate limiting.
 
-### Reusable Helper Script
+### Reusable Helper Scripts
 
+#### git-ip-check
 The `git-ip-check` script can be installed system-wide for use in multiple hooks:
 
 ```bash
@@ -271,6 +304,22 @@ git-ip-check "/path/to/config.json"
 # With custom bypass variables
 git-ip-check "/path/to/config.json" MY_BYPASS_VAR my.config.key
 ```
+
+#### git-ip-info
+The `git-ip-info` command provides detailed information about your current IP location and Git configuration:
+
+```bash
+# Check your IP and Git info from anywhere
+git-ip-info
+```
+
+Features:
+- Displays current IP address with country flag
+- Shows Git user name and email configuration
+- Indicates if you're in a git repository with local overrides
+- Warns if your location is in the sanctioned list
+- Shows ISP/Organization and timezone information
+- Checks for active IP check bypasses
 
 ### Using in Other Hooks
 

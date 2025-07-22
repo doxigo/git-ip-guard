@@ -1,0 +1,423 @@
+#!/bin/bash
+
+# git-ip-info: Display current IP information and git configuration
+# Can be installed to /usr/local/bin/ for system-wide use
+
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Function to get IP info with fallback
+get_ip_info() {
+    local ip_info=""
+    
+    # Try primary service (ifconfig.co)
+    ip_info=$(curl -s --connect-timeout 5 --max-time 10 https://ifconfig.co/json 2>/dev/null)
+    
+    # Check if we got a forbidden error, rate limit error or empty response
+    if [ -z "$ip_info" ] || echo "$ip_info" | grep -q "Forbidden" || echo "$ip_info" | grep -q "Rate limit exceeded" || echo "$ip_info" | grep -q "429"; then
+        # Try fallback service (ipinfo.io)
+        ip_info=$(curl -s --connect-timeout 5 --max-time 10 https://ipinfo.io/json 2>/dev/null)
+        
+        # If fallback also fails, try one more time with ipinfo.io after a brief pause
+        if [ -z "$ip_info" ] || echo "$ip_info" | grep -q "Forbidden"; then
+            sleep 2
+            ip_info=$(curl -s --connect-timeout 5 --max-time 10 https://ipinfo.io/json 2>/dev/null)
+        fi
+    fi
+    
+    echo "$ip_info"
+}
+
+# Function to get country flag
+get_flag() {
+    case "$1" in
+        "AD") echo "🇦🇩" ;;
+        "AE") echo "🇦🇪" ;;
+        "AF") echo "🇦🇫" ;;
+        "AG") echo "🇦🇬" ;;
+        "AI") echo "🇦🇮" ;;
+        "AL") echo "🇦🇱" ;;
+        "AM") echo "🇦🇲" ;;
+        "AO") echo "🇦🇴" ;;
+        "AQ") echo "🇦🇶" ;;
+        "AR") echo "🇦🇷" ;;
+        "AS") echo "🇦🇸" ;;
+        "AT") echo "🇦🇹" ;;
+        "AU") echo "🇦🇺" ;;
+        "AW") echo "🇦🇼" ;;
+        "AX") echo "🇦🇽" ;;
+        "AZ") echo "🇦🇿" ;;
+        "BA") echo "🇧🇦" ;;
+        "BB") echo "🇧🇧" ;;
+        "BD") echo "🇧🇩" ;;
+        "BE") echo "🇧🇪" ;;
+        "BF") echo "🇧🇫" ;;
+        "BG") echo "🇧🇬" ;;
+        "BH") echo "🇧🇭" ;;
+        "BI") echo "🇧🇮" ;;
+        "BJ") echo "🇧🇯" ;;
+        "BL") echo "🇧🇱" ;;
+        "BM") echo "🇧🇲" ;;
+        "BN") echo "🇧🇳" ;;
+        "BO") echo "🇧🇴" ;;
+        "BQ") echo "🇧🇶" ;;
+        "BR") echo "🇧🇷" ;;
+        "BS") echo "🇧🇸" ;;
+        "BT") echo "🇧🇹" ;;
+        "BV") echo "🇧🇻" ;;
+        "BW") echo "🇧🇼" ;;
+        "BY") echo "🇧🇾" ;;
+        "BZ") echo "🇧🇿" ;;
+        "CA") echo "🇨🇦" ;;
+        "CC") echo "🇨🇨" ;;
+        "CD") echo "🇨🇩" ;;
+        "CF") echo "🇨🇫" ;;
+        "CG") echo "🇨🇬" ;;
+        "CH") echo "🇨🇭" ;;
+        "CI") echo "🇨🇮" ;;
+        "CK") echo "🇨🇰" ;;
+        "CL") echo "🇨🇱" ;;
+        "CM") echo "🇨🇲" ;;
+        "CN") echo "🇨🇳" ;;
+        "CO") echo "🇨🇴" ;;
+        "CR") echo "🇨🇷" ;;
+        "CU") echo "🇨🇺" ;;
+        "CV") echo "🇨🇻" ;;
+        "CW") echo "🇨🇼" ;;
+        "CX") echo "🇨🇽" ;;
+        "CY") echo "🇨🇾" ;;
+        "CZ") echo "🇨🇿" ;;
+        "DE") echo "🇩🇪" ;;
+        "DJ") echo "🇩🇯" ;;
+        "DK") echo "🇩🇰" ;;
+        "DM") echo "🇩🇲" ;;
+        "DO") echo "🇩🇴" ;;
+        "DZ") echo "🇩🇿" ;;
+        "EC") echo "🇪🇨" ;;
+        "EE") echo "🇪🇪" ;;
+        "EG") echo "🇪🇬" ;;
+        "EH") echo "🇪🇭" ;;
+        "ER") echo "🇪🇷" ;;
+        "ES") echo "🇪🇸" ;;
+        "ET") echo "🇪🇹" ;;
+        "FI") echo "🇫🇮" ;;
+        "FJ") echo "🇫🇯" ;;
+        "FK") echo "🇫🇰" ;;
+        "FM") echo "🇫🇲" ;;
+        "FO") echo "🇫🇴" ;;
+        "FR") echo "🇫🇷" ;;
+        "GA") echo "🇬🇦" ;;
+        "GB") echo "🇬🇧" ;;
+        "GD") echo "🇬🇩" ;;
+        "GE") echo "🇬🇪" ;;
+        "GF") echo "🇬🇫" ;;
+        "GG") echo "🇬🇬" ;;
+        "GH") echo "🇬🇭" ;;
+        "GI") echo "🇬🇮" ;;
+        "GL") echo "🇬🇱" ;;
+        "GM") echo "🇬🇲" ;;
+        "GN") echo "🇬🇳" ;;
+        "GP") echo "🇬🇵" ;;
+        "GQ") echo "🇬🇶" ;;
+        "GR") echo "🇬🇷" ;;
+        "GS") echo "🇬🇸" ;;
+        "GT") echo "🇬🇹" ;;
+        "GU") echo "🇬🇺" ;;
+        "GW") echo "🇬🇼" ;;
+        "GY") echo "🇬🇾" ;;
+        "HK") echo "🇭🇰" ;;
+        "HM") echo "🇭🇲" ;;
+        "HN") echo "🇭🇳" ;;
+        "HR") echo "🇭🇷" ;;
+        "HT") echo "🇭🇹" ;;
+        "HU") echo "🇭🇺" ;;
+        "ID") echo "🇮🇩" ;;
+        "IE") echo "🇮🇪" ;;
+        "IL") echo "🇮🇱" ;;
+        "IM") echo "🇮🇲" ;;
+        "IN") echo "🇮🇳" ;;
+        "IO") echo "🇮🇴" ;;
+        "IQ") echo "🇮🇶" ;;
+        "IR") echo "🇮🇷" ;;
+        "IS") echo "🇮🇸" ;;
+        "IT") echo "🇮🇹" ;;
+        "JE") echo "🇯🇪" ;;
+        "JM") echo "🇯🇲" ;;
+        "JO") echo "🇯🇴" ;;
+        "JP") echo "🇯🇵" ;;
+        "KE") echo "🇰🇪" ;;
+        "KG") echo "🇰🇬" ;;
+        "KH") echo "🇰🇭" ;;
+        "KI") echo "🇰🇮" ;;
+        "KM") echo "🇰🇲" ;;
+        "KN") echo "🇰🇳" ;;
+        "KP") echo "🇰🇵" ;;
+        "KR") echo "🇰🇷" ;;
+        "KW") echo "🇰🇼" ;;
+        "KY") echo "🇰🇾" ;;
+        "KZ") echo "🇰🇿" ;;
+        "LA") echo "🇱🇦" ;;
+        "LB") echo "🇱🇧" ;;
+        "LC") echo "🇱🇨" ;;
+        "LI") echo "🇱🇮" ;;
+        "LK") echo "🇱🇰" ;;
+        "LR") echo "🇱🇷" ;;
+        "LS") echo "🇱🇸" ;;
+        "LT") echo "🇱🇹" ;;
+        "LU") echo "🇱🇺" ;;
+        "LV") echo "🇱🇻" ;;
+        "LY") echo "🇱🇾" ;;
+        "MA") echo "🇲🇦" ;;
+        "MC") echo "🇲🇨" ;;
+        "MD") echo "🇲🇩" ;;
+        "ME") echo "🇲🇪" ;;
+        "MF") echo "🇲🇫" ;;
+        "MG") echo "🇲🇬" ;;
+        "MH") echo "🇲🇭" ;;
+        "MK") echo "🇲🇰" ;;
+        "ML") echo "🇲🇱" ;;
+        "MM") echo "🇲🇲" ;;
+        "MN") echo "🇲🇳" ;;
+        "MO") echo "🇲🇴" ;;
+        "MP") echo "🇲🇵" ;;
+        "MQ") echo "🇲🇶" ;;
+        "MR") echo "🇲🇷" ;;
+        "MS") echo "🇲🇸" ;;
+        "MT") echo "🇲🇹" ;;
+        "MU") echo "🇲🇺" ;;
+        "MV") echo "🇲🇻" ;;
+        "MW") echo "🇲🇼" ;;
+        "MX") echo "🇲🇽" ;;
+        "MY") echo "🇲🇾" ;;
+        "MZ") echo "🇲🇿" ;;
+        "NA") echo "🇳🇦" ;;
+        "NC") echo "🇳🇨" ;;
+        "NE") echo "🇳🇪" ;;
+        "NF") echo "🇳🇫" ;;
+        "NG") echo "🇳🇬" ;;
+        "NI") echo "🇳🇮" ;;
+        "NL") echo "🇳🇱" ;;
+        "NO") echo "🇳🇴" ;;
+        "NP") echo "🇳🇵" ;;
+        "NR") echo "🇳🇷" ;;
+        "NU") echo "🇳🇺" ;;
+        "NZ") echo "🇳🇿" ;;
+        "OM") echo "🇴🇲" ;;
+        "PA") echo "🇵🇦" ;;
+        "PE") echo "🇵🇪" ;;
+        "PF") echo "🇵🇫" ;;
+        "PG") echo "🇵🇬" ;;
+        "PH") echo "🇵🇭" ;;
+        "PK") echo "🇵🇰" ;;
+        "PL") echo "🇵🇱" ;;
+        "PM") echo "🇵🇲" ;;
+        "PN") echo "🇵🇳" ;;
+        "PR") echo "🇵🇷" ;;
+        "PS") echo "🇵🇸" ;;
+        "PT") echo "🇵🇹" ;;
+        "PW") echo "🇵🇼" ;;
+        "PY") echo "🇵🇾" ;;
+        "QA") echo "🇶🇦" ;;
+        "RE") echo "🇷🇪" ;;
+        "RO") echo "🇷🇴" ;;
+        "RS") echo "🇷🇸" ;;
+        "RU") echo "🇷🇺" ;;
+        "RW") echo "🇷🇼" ;;
+        "SA") echo "🇸🇦" ;;
+        "SB") echo "🇸🇧" ;;
+        "SC") echo "🇸🇨" ;;
+        "SD") echo "🇸🇩" ;;
+        "SE") echo "🇸🇪" ;;
+        "SG") echo "🇸🇬" ;;
+        "SH") echo "🇸🇭" ;;
+        "SI") echo "🇸🇮" ;;
+        "SJ") echo "🇸🇯" ;;
+        "SK") echo "🇸🇰" ;;
+        "SL") echo "🇸🇱" ;;
+        "SM") echo "🇸🇲" ;;
+        "SN") echo "🇸🇳" ;;
+        "SO") echo "🇸🇴" ;;
+        "SR") echo "🇸🇷" ;;
+        "SS") echo "🇸🇸" ;;
+        "ST") echo "🇸🇹" ;;
+        "SV") echo "🇸🇻" ;;
+        "SX") echo "🇸🇽" ;;
+        "SY") echo "🇸🇾" ;;
+        "SZ") echo "🇸🇿" ;;
+        "TC") echo "🇹🇨" ;;
+        "TD") echo "🇹🇩" ;;
+        "TF") echo "🇹🇫" ;;
+        "TG") echo "🇹🇬" ;;
+        "TH") echo "🇹🇭" ;;
+        "TJ") echo "🇹🇯" ;;
+        "TK") echo "🇹🇰" ;;
+        "TL") echo "🇹🇱" ;;
+        "TM") echo "🇹🇲" ;;
+        "TN") echo "🇹🇳" ;;
+        "TO") echo "🇹🇴" ;;
+        "TR") echo "🇹🇷" ;;
+        "TT") echo "🇹🇹" ;;
+        "TV") echo "🇹🇻" ;;
+        "TW") echo "🇹🇼" ;;
+        "TZ") echo "🇹🇿" ;;
+        "UA") echo "🇺🇦" ;;
+        "UG") echo "🇺🇬" ;;
+        "UM") echo "🇺🇲" ;;
+        "US") echo "🇺🇸" ;;
+        "UY") echo "🇺🇾" ;;
+        "UZ") echo "🇺🇿" ;;
+        "VA") echo "🇻🇦" ;;
+        "VC") echo "🇻🇨" ;;
+        "VE") echo "🇻🇪" ;;
+        "VG") echo "🇻🇬" ;;
+        "VI") echo "🇻🇮" ;;
+        "VN") echo "🇻🇳" ;;
+        "VU") echo "🇻🇺" ;;
+        "WF") echo "🇼🇫" ;;
+        "WS") echo "🇼🇸" ;;
+        "XK") echo "🇽🇰" ;;
+        "YE") echo "🇾🇪" ;;
+        "YT") echo "🇾🇹" ;;
+        "ZA") echo "🇿🇦" ;;
+        "ZM") echo "🇿🇲" ;;
+        "ZW") echo "🇿🇼" ;;
+        *) echo "🏳️" ;;
+    esac
+}
+
+# Clear screen for clean display
+clear
+
+# Header
+echo -e "${CYAN}${BOLD}"
+echo "╔═══════════════════════════════════════════════════════════╗"
+echo "║                    Git & IP Information                   ║"
+echo "╚═══════════════════════════════════════════════════════════╝"
+echo -e "${NC}"
+
+# Get git configuration
+echo -e "${BLUE}${BOLD}Git Configuration:${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Get git user name
+GIT_USER_NAME=$(git config --get user.name 2>/dev/null)
+if [ -z "$GIT_USER_NAME" ]; then
+    GIT_USER_NAME="${RED}Not configured${NC}"
+else
+    GIT_USER_NAME="${GREEN}$GIT_USER_NAME${NC}"
+fi
+
+# Get git user email
+GIT_USER_EMAIL=$(git config --get user.email 2>/dev/null)
+if [ -z "$GIT_USER_EMAIL" ]; then
+    GIT_USER_EMAIL="${RED}Not configured${NC}"
+else
+    GIT_USER_EMAIL="${GREEN}$GIT_USER_EMAIL${NC}"
+fi
+
+# Get git global vs local config info
+if git rev-parse --git-dir > /dev/null 2>&1; then
+    # We're in a git repository
+    LOCAL_NAME=$(git config --local --get user.name 2>/dev/null)
+    LOCAL_EMAIL=$(git config --local --get user.email 2>/dev/null)
+    GLOBAL_NAME=$(git config --global --get user.name 2>/dev/null)
+    GLOBAL_EMAIL=$(git config --global --get user.email 2>/dev/null)
+    
+    echo -e "  ${BOLD}User Name:${NC}  $GIT_USER_NAME"
+    if [ -n "$LOCAL_NAME" ] && [ "$LOCAL_NAME" != "$GLOBAL_NAME" ]; then
+        echo -e "              ${YELLOW}(Local override in this repository)${NC}"
+    fi
+    
+    echo -e "  ${BOLD}User Email:${NC} $GIT_USER_EMAIL"
+    if [ -n "$LOCAL_EMAIL" ] && [ "$LOCAL_EMAIL" != "$GLOBAL_EMAIL" ]; then
+        echo -e "              ${YELLOW}(Local override in this repository)${NC}"
+    fi
+else
+    # Not in a git repository, show global config only
+    echo -e "  ${BOLD}User Name:${NC}  $GIT_USER_NAME ${YELLOW}(global)${NC}"
+    echo -e "  ${BOLD}User Email:${NC} $GIT_USER_EMAIL ${YELLOW}(global)${NC}"
+fi
+
+echo ""
+
+# Get IP information
+echo -e "${BLUE}${BOLD}IP & Location Information:${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+echo -e "${YELLOW}Fetching IP information...${NC}"
+
+# Get IP info
+IP_INFO=$(get_ip_info)
+
+if [ -z "$IP_INFO" ]; then
+    echo -e "${RED}Error: Could not fetch IP information${NC}"
+    exit 1
+fi
+
+# Extract details
+IP=$(echo "$IP_INFO" | jq -r '.ip // empty' 2>/dev/null)
+COUNTRY=$(echo "$IP_INFO" | jq -r '.country_iso // .country // empty' 2>/dev/null | tr '[:lower:]' '[:upper:]')
+CITY=$(echo "$IP_INFO" | jq -r '.city // empty' 2>/dev/null)
+REGION=$(echo "$IP_INFO" | jq -r '.region // empty' 2>/dev/null)
+ORG=$(echo "$IP_INFO" | jq -r '.org // .asn_org // empty' 2>/dev/null)
+TIMEZONE=$(echo "$IP_INFO" | jq -r '.timezone // .time_zone // empty' 2>/dev/null)
+
+# Get country flag
+FLAG=$(get_flag "$COUNTRY")
+
+# Clear the "Fetching..." line and display results
+echo -e "\033[1A\033[K"  # Move up one line and clear it
+
+echo -e "  ${BOLD}IP Address:${NC}  ${GREEN}$IP${NC}"
+echo -e "  ${BOLD}Location:${NC}    $FLAG ${GREEN}$CITY, $REGION, $COUNTRY${NC}"
+if [ -n "$ORG" ] && [ "$ORG" != "null" ]; then
+    echo -e "  ${BOLD}ISP/Org:${NC}     ${GREEN}$ORG${NC}"
+fi
+if [ -n "$TIMEZONE" ] && [ "$TIMEZONE" != "null" ]; then
+    echo -e "  ${BOLD}Timezone:${NC}    ${GREEN}$TIMEZONE${NC}"
+fi
+
+# Check if current location is in sanctioned list
+echo ""
+echo -e "${BLUE}${BOLD}Git IP Guard Status:${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Check for git-ip-guard configuration
+CONFIG_FILE="$HOME/.git-templates/hooks/ip-check-config.json"
+if [ -f "$CONFIG_FILE" ]; then
+    BLOCKED_COUNTRIES=$(cat "$CONFIG_FILE" | jq -r '.blocked_countries[]' 2>/dev/null | tr '\n' ' ')
+    
+    if [[ " $BLOCKED_COUNTRIES " =~ " $COUNTRY " ]]; then
+        echo -e "  ${RED}⛔ WARNING: Your current location ($FLAG $COUNTRY) is in the sanctioned list!${NC}"
+        echo -e "  ${YELLOW}Git pushes will be blocked from this location.${NC}"
+    else
+        echo -e "  ${GREEN}✅ Your location ($FLAG $COUNTRY) is not restricted.${NC}"
+        echo -e "  ${GREEN}Git pushes are allowed from this location.${NC}"
+    fi
+    
+    # Check if bypasses are active
+    if [ "${SKIP_IP_CHECK}" = "1" ]; then
+        echo -e "  ${YELLOW}⚠️  Note: SKIP_IP_CHECK environment variable is set${NC}"
+    fi
+    
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        if [ "$(git config --get hooks.allowpush)" = "true" ]; then
+            echo -e "  ${YELLOW}⚠️  Note: IP checks are disabled for this repository${NC}"
+        fi
+    fi
+else
+    echo -e "  ${YELLOW}Git IP Guard is not installed.${NC}"
+fi
+
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Show current time
+echo -e "${MAGENTA}Generated at: $(date '+%Y-%m-%d %H:%M:%S %Z')${NC}"
