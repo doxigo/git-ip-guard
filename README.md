@@ -20,6 +20,9 @@ This isn't a celebration of restrictions, but rather a technical implementation 
 ### ⛔ Push Blocked
 ![Git push blocked from sanctioned location](git-ip-guard--blocked.png)
 
+### 📊 Git IP Info Command
+![Git IP info showing current location and git configuration](git-ip-guard--git-ip-info.png)
+
 ## Features
 
 - 🛡️ Blocks git push operations from sanctioned countries
