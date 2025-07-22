@@ -363,20 +363,102 @@ fi
 
 # Extract details
 IP=$(echo "$IP_INFO" | jq -r '.ip // empty' 2>/dev/null)
-COUNTRY=$(echo "$IP_INFO" | jq -r '.country_iso // .country // empty' 2>/dev/null | tr '[:lower:]' '[:upper:]')
+COUNTRY_ISO=$(echo "$IP_INFO" | jq -r '.country_iso // .country // empty' 2>/dev/null | tr '[:lower:]' '[:upper:]')
+COUNTRY_NAME=$(echo "$IP_INFO" | jq -r '.country // empty' 2>/dev/null)
 CITY=$(echo "$IP_INFO" | jq -r '.city // empty' 2>/dev/null)
 REGION=$(echo "$IP_INFO" | jq -r '.region // empty' 2>/dev/null)
 ORG=$(echo "$IP_INFO" | jq -r '.org // .asn_org // empty' 2>/dev/null)
 TIMEZONE=$(echo "$IP_INFO" | jq -r '.timezone // .time_zone // empty' 2>/dev/null)
 
 # Get country flag
-FLAG=$(get_flag "$COUNTRY")
+FLAG=$(get_flag "$COUNTRY_ISO")
+
+# Determine full country name
+if [ -n "$COUNTRY_NAME" ] && [ "$COUNTRY_NAME" != "$COUNTRY_ISO" ] && [ "$COUNTRY_NAME" != "null" ]; then
+    # We have a full country name from ifconfig.co
+    COUNTRY_DISPLAY="$COUNTRY_NAME"
+else
+    # We only have ISO code, let's map it to full name
+    case "$COUNTRY_ISO" in
+        "NO") COUNTRY_DISPLAY="Norway" ;;
+        "US") COUNTRY_DISPLAY="United States" ;;
+        "GB") COUNTRY_DISPLAY="United Kingdom" ;;
+        "DE") COUNTRY_DISPLAY="Germany" ;;
+        "FR") COUNTRY_DISPLAY="France" ;;
+        "CA") COUNTRY_DISPLAY="Canada" ;;
+        "AU") COUNTRY_DISPLAY="Australia" ;;
+        "JP") COUNTRY_DISPLAY="Japan" ;;
+        "CN") COUNTRY_DISPLAY="China" ;;
+        "IN") COUNTRY_DISPLAY="India" ;;
+        "BR") COUNTRY_DISPLAY="Brazil" ;;
+        "MX") COUNTRY_DISPLAY="Mexico" ;;
+        "IT") COUNTRY_DISPLAY="Italy" ;;
+        "ES") COUNTRY_DISPLAY="Spain" ;;
+        "NL") COUNTRY_DISPLAY="Netherlands" ;;
+        "SE") COUNTRY_DISPLAY="Sweden" ;;
+        "CH") COUNTRY_DISPLAY="Switzerland" ;;
+        "PL") COUNTRY_DISPLAY="Poland" ;;
+        "TR") COUNTRY_DISPLAY="Turkey" ;;
+        "KR") COUNTRY_DISPLAY="South Korea" ;;
+        "IR") COUNTRY_DISPLAY="Iran" ;;
+        "RU") COUNTRY_DISPLAY="Russia" ;;
+        "BY") COUNTRY_DISPLAY="Belarus" ;;
+        "CU") COUNTRY_DISPLAY="Cuba" ;;
+        "SY") COUNTRY_DISPLAY="Syria" ;;
+        "KP") COUNTRY_DISPLAY="North Korea" ;;
+        "UA") COUNTRY_DISPLAY="Ukraine" ;;
+        "DK") COUNTRY_DISPLAY="Denmark" ;;
+        "FI") COUNTRY_DISPLAY="Finland" ;;
+        "IS") COUNTRY_DISPLAY="Iceland" ;;
+        "IE") COUNTRY_DISPLAY="Ireland" ;;
+        "BE") COUNTRY_DISPLAY="Belgium" ;;
+        "AT") COUNTRY_DISPLAY="Austria" ;;
+        "PT") COUNTRY_DISPLAY="Portugal" ;;
+        "CZ") COUNTRY_DISPLAY="Czech Republic" ;;
+        "GR") COUNTRY_DISPLAY="Greece" ;;
+        "HU") COUNTRY_DISPLAY="Hungary" ;;
+        "RO") COUNTRY_DISPLAY="Romania" ;;
+        "BG") COUNTRY_DISPLAY="Bulgaria" ;;
+        "HR") COUNTRY_DISPLAY="Croatia" ;;
+        "SK") COUNTRY_DISPLAY="Slovakia" ;;
+        "SI") COUNTRY_DISPLAY="Slovenia" ;;
+        "LT") COUNTRY_DISPLAY="Lithuania" ;;
+        "LV") COUNTRY_DISPLAY="Latvia" ;;
+        "EE") COUNTRY_DISPLAY="Estonia" ;;
+        "LU") COUNTRY_DISPLAY="Luxembourg" ;;
+        "MT") COUNTRY_DISPLAY="Malta" ;;
+        "CY") COUNTRY_DISPLAY="Cyprus" ;;
+        *) COUNTRY_DISPLAY="$COUNTRY_ISO" ;;
+    esac
+fi
 
 # Clear the "Fetching..." line and display results
 echo -e "\033[1A\033[K"  # Move up one line and clear it
 
 echo -e "  ${BOLD}IP Address:${NC}  ${GREEN}$IP${NC}"
-echo -e "  ${BOLD}Location:${NC}    $FLAG ${GREEN}$CITY, $REGION, $COUNTRY${NC}"
+
+# Build location string, handling empty values
+LOCATION="$FLAG ${GREEN}"
+if [ -n "$CITY" ] && [ "$CITY" != "null" ]; then
+    LOCATION="${LOCATION}$CITY"
+fi
+if [ -n "$REGION" ] && [ "$REGION" != "null" ] && [ "$REGION" != "$CITY" ]; then
+    if [ -n "$CITY" ] && [ "$CITY" != "null" ]; then
+        LOCATION="${LOCATION}, $REGION"
+    else
+        LOCATION="${LOCATION}$REGION"
+    fi
+fi
+if [ -n "$COUNTRY_DISPLAY" ]; then
+    if [ -n "$CITY" ] && [ "$CITY" != "null" ] || [ -n "$REGION" ] && [ "$REGION" != "null" ]; then
+        LOCATION="${LOCATION}, $COUNTRY_DISPLAY"
+    else
+        LOCATION="${LOCATION}$COUNTRY_DISPLAY"
+    fi
+fi
+LOCATION="${LOCATION}${NC}"
+
+echo -e "  ${BOLD}Location:${NC}    $LOCATION"
 if [ -n "$ORG" ] && [ "$ORG" != "null" ]; then
     echo -e "  ${BOLD}ISP/Org:${NC}     ${GREEN}$ORG${NC}"
 fi
@@ -394,11 +476,11 @@ CONFIG_FILE="$HOME/.git-templates/hooks/ip-check-config.json"
 if [ -f "$CONFIG_FILE" ]; then
     BLOCKED_COUNTRIES=$(cat "$CONFIG_FILE" | jq -r '.blocked_countries[]' 2>/dev/null | tr '\n' ' ')
     
-    if [[ " $BLOCKED_COUNTRIES " =~ " $COUNTRY " ]]; then
-        echo -e "  ${RED}⛔ WARNING: Your current location ($FLAG $COUNTRY) is in the sanctioned list!${NC}"
+    if [[ " $BLOCKED_COUNTRIES " =~ " $COUNTRY_ISO " ]]; then
+        echo -e "  ${RED}⛔ WARNING: Your current location ($FLAG $COUNTRY_DISPLAY) is in the sanctioned list!${NC}"
         echo -e "  ${YELLOW}Git pushes will be blocked from this location.${NC}"
     else
-        echo -e "  ${GREEN}✅ Your location ($FLAG $COUNTRY) is not restricted.${NC}"
+        echo -e "  ${GREEN}✅ Your location ($FLAG $COUNTRY_DISPLAY) is not restricted.${NC}"
         echo -e "  ${GREEN}Git pushes are allowed from this location.${NC}"
     fi
     
