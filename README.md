@@ -15,13 +15,16 @@ This isn't a celebration of restrictions, but rather a technical implementation 
 ## Screenshots
 
 ### ✅ Push Allowed
-![Git push allowed from safe location](git-ip-guard--allowed.png)
+
+![Git push allowed from safe location](screenshots/git-ip-guard--allowed.png)
 
 ### ⛔ Push Blocked
-![Git push blocked from sanctioned location](git-ip-guard--blocked.png)
+
+![Git push blocked from sanctioned location](screenshots/git-ip-guard--blocked.png)
 
 ### 📊 Git IP Info Command
-![Git IP info showing current location and git configuration](git-ip-guard--git-ip-info.png)
+
+![Git IP info showing current location and git configuration](screenshots/git-ip-guard--git-ip-info.png)
 
 ## Features
 
@@ -47,47 +50,52 @@ This isn't a celebration of restrictions, but rather a technical implementation 
 ### Quick Start
 
 1. Clone this repository:
+
    ```bash
    git clone https://github.com/doxigo/git-ip-guard.git
    cd git-ip-guard
    ```
 
 2. Install jq if not already installed:
+
    ```bash
    brew install jq
    ```
 
 3. Run the installation script:
+
    ```bash
-   chmod +x install.sh
-   ./install.sh
+   chmod +x scripts/install.sh
+   ./scripts/install.sh
    ```
 
 4. For existing repositories, you have two options:
 
    **Option A**: Apply to individual repos
+
    ```bash
    cd /path/to/your/repo
    git init
    ```
 
    **Option B**: Bulk apply to multiple repos
+
    ```bash
    # Interactive mode - will prompt before overwriting existing hooks
-   ./apply-to-existing-repos.sh
+   ./scripts/apply-to-existing-repos.sh
 
    # Force update mode - automatically overwrites existing hooks
-   ./apply-to-existing-repos.sh --force
+   ./scripts/apply-to-existing-repos.sh --force
    ```
 
 ### Installation Options
 
 ```bash
 # Basic installation (git hooks only)
-./install.sh
+./scripts/install.sh
 
 # Install with system-wide helper (requires sudo)
-./install.sh --install-helper
+./scripts/install.sh --install-helper
 ```
 
 ### Installing the git-ip-info Command
@@ -96,24 +104,23 @@ The `git-ip-info` command provides a quick way to check your current IP location
 
 ```bash
 # Make the script executable
-chmod +x git-ip-info
+chmod +x scripts/git-ip-info
 
 # Install system-wide (requires sudo)
-sudo cp git-ip-info /usr/local/bin/
+sudo cp scripts/git-ip-info /usr/local/bin/
 sudo chmod +x /usr/local/bin/git-ip-info
 
 # Now you can use it from anywhere
 git-ip-info
 ```
 
-
 ## Uninstallation
 
 To completely remove Git IP Guard:
 
 ```bash
-chmod +x uninstall.sh
-./uninstall.sh
+chmod +x scripts/uninstall.sh
+./scripts/uninstall.sh
 
 ```
 
@@ -134,27 +141,18 @@ git-ip-info
 ```
 
 This command displays:
+
 - Your Git user name and email (both global and local if in a repository)
 - Your current IP address and location with country flag
 - ISP/Organization information
 - Git IP Guard status (whether your location is restricted)
 - Any active bypass settings
 
-### Testing
-
-To test the blocking functionality without needing a real remote:
-
-```bash
-./test-push.sh
-```
-
-To manually test with different locations:
-1. Switch to a VPN location (try a sanctioned country like Russia)
-2. Run the test script again
 
 ## Sanctioned Countries/Regions
 
 Git pushes are blocked from:
+
 - 🇧🇾 Belarus (BY)
 - 🇨🇺 Cuba (CU)
 - 🇮🇷 Iran (IR)
@@ -171,16 +169,21 @@ Git pushes are blocked from:
 Run the comprehensive test suite:
 
 ```bash
-./test.sh          # Run all tests
-./test.sh current  # Test current location only
-./test.sh bypass   # Test bypass mechanisms
-./test.sh helper   # Test git-ip-check helper
+./test/test.sh          # Run all tests
+./test/test.sh current  # Test current location only
+./test/test.sh bypass   # Test bypass mechanisms
+./test/test.sh helper   # Test git-ip-check helper
 ```
 
 The test will show:
+
 - Your current location with country flag
 - Whether pushes are allowed or blocked
 - Verification of all bypass methods
+
+To manually test with different locations:
+1. Switch to a VPN location (try a sanctioned country like Russia)
+2. Run the test script again
 
 ## How It Works
 
@@ -195,55 +198,68 @@ The test will show:
 
 ## Disabling/Bypassing IP Checks
 
-There are three ways to disable or bypass the IP check mechanism:
+There are several methods to disable or bypass the IP check mechanism:
 
-### 1. Temporary Bypass (Single Command)
+### 1. Temporary Bypass (Environment Variable)
 
-For a one-time bypass, set the `SKIP_IP_CHECK` environment variable:
-
-```bash
-SKIP_IP_CHECK=1 git push origin main
-```
-
-This is useful when you need to push urgently or are experiencing false positives.
+- Usage: `IPCHECK_BYPASS=1 git push origin main`
+- Scope: Single command only
+- Use case: Emergency pushes, false positives
 
 ### 2. Repository-Specific Disable
 
-To disable IP checks for a specific repository:
-
-```bash
-cd /path/to/your/repo
-git config hooks.allowpush true
-```
-
-To re-enable:
-
-```bash
-git config --unset hooks.allowpush
-```
+- Enable: `git config ipcheck.disable true`
+- Disable: `git config --unset ipcheck.disable`
+- Scope: Current repository only
+- Use case: Repos that should never have IP checks
 
 ### 3. Global Disable
 
-To completely disable Git IP Guard globally:
+- Commands:
 
-```bash
-# Remove the git template directory setting
-git config --global --unset init.templateDir
+  ```bash
+  git config --global --unset init.templateDir
+  rm ~/.git-templates/hooks/pre-push
+  ```
 
-# Delete the hook from the template directory
-rm ~/.git-templates/hooks/pre-push
-
-# For existing repositories, you'll need to manually remove the hook
-# rm .git/hooks/pre-push
-```
+- Scope: All new repositories (existing repos keep their hooks)
+- Use case: Complete removal of Git IP Guard
 
 Note: After global disable, new repositories won't have the IP check, but existing repositories will still have the hook unless manually removed.
+
+### Implementation Details
+
+The `pre-push` hook includes two bypass checks at the beginning:
+
+```bash
+# Check for temporary bypass via environment variable
+if [ "$IPCHECK_BYPASS" = "1" ]; then
+  echo -e "${YELLOW}⚠️  IP check bypassed via IPCHECK_BYPASS environment variable${NC}"
+  exit 0
+fi
+
+# Check for repo-local disable via git config
+if [ "$(git config --get ipcheck.disable)" = "true" ]; then
+  echo -e "${YELLOW}⚠️  IP check disabled for this repository${NC}"
+  exit 0
+fi
+```
+
+### Testing Bypass Mechanisms
+
+The test suite (`./test/test.sh bypass`) verifies all bypass mechanisms work correctly:
+- Creates a temporary test repository
+- Tests normal IP check behavior
+- Tests environment variable bypass
+- Tests repository-specific disable
+- Tests re-enabling checks
 
 ## Troubleshooting
 
 ### "IP cache file not found" error
 
 If you see this error after updating Git IP Guard:
+
 - You have an outdated `git-ip-check` helper installed
 - Solution: Update the helper with `sudo ./install.sh --install-helper`
 - Alternative: Remove it with `sudo rm /usr/local/bin/git-ip-check`
@@ -253,7 +269,6 @@ If you see this error after updating Git IP Guard:
 - Check your internet connection
 - Try the push again (the hook includes automatic retry logic)
 - Use `SKIP_IP_CHECK=1 git push` if you need to bypass temporarily
-
 
 ### Hook not triggering
 
@@ -284,6 +299,7 @@ Pull requests are welcome! Please feel free to submit improvements.
 ### Rate Limit Handling
 
 The git-ip-check helper includes automatic fallback to alternative IP services:
+
 1. Primary: `ifconfig.co/json` (provides ISO country codes, more reliable)
 2. Fallback: `ipinfo.io/json` (automatic switch when primary is unavailable)
 3. Retry logic with delays
@@ -295,6 +311,7 @@ This ensures the IP check continues working even during rate limiting.
 ### Reusable Helper Scripts
 
 #### git-ip-check
+
 The `git-ip-check` script can be installed system-wide for use in multiple hooks:
 
 ```bash
@@ -302,13 +319,14 @@ The `git-ip-check` script can be installed system-wide for use in multiple hooks
 ./install.sh --install-helper
 
 # Use in any git hook
-git-ip-check "/path/to/config.json"
+git-ip-check "/config/ip-check-config.json"
 
 # With custom bypass variables
 git-ip-check "/path/to/config.json" MY_BYPASS_VAR my.config.key
 ```
 
 #### git-ip-info
+
 The `git-ip-info` command provides detailed information about your current IP location and Git configuration:
 
 ```bash
@@ -317,6 +335,7 @@ git-ip-info
 ```
 
 Features:
+
 - Displays current IP address with country flag
 - Shows Git user name and email configuration
 - Indicates if you're in a git repository with local overrides
@@ -327,6 +346,7 @@ Features:
 ### Using in Other Hooks
 
 Example pre-commit hook:
+
 ```bash
 #!/bin/bash
 git-ip-check "$(dirname "$0")/ip-check-config.json" \
@@ -335,6 +355,7 @@ git-ip-check "$(dirname "$0")/ip-check-config.json" \
 ```
 
 This allows you to:
+
 - Use different bypass mechanisms for different hooks
 - Share the same IP checking logic across multiple git operations
 - Maintain consistent security policies
@@ -344,16 +365,19 @@ This allows you to:
 The `apply-to-existing-repos.sh` script helps you apply Git IP Guard to multiple existing repositories:
 
 **Interactive mode** (recommended):
+
 ```bash
 ./apply-to-existing-repos.sh
 ```
 
 This will prompt you to:
+
 1. Search common development directories
 2. Search from current directory
 3. Specify a custom directory
 
 **Command line mode**:
+
 ```bash
 # Apply to specific directories
 ./apply-to-existing-repos.sh ~/Projects ~/Work
@@ -363,6 +387,7 @@ This will prompt you to:
 ```
 
 **Force update mode** (skip confirmation prompts):
+
 ```bash
 # Force update in interactive mode
 ./apply-to-existing-repos.sh --force
@@ -372,6 +397,7 @@ This will prompt you to:
 ```
 
 The script:
+
 - Finds all Git repositories in specified directories
 - Asks before overwriting existing hooks (unless `--force` is used)
 - Uses `git init` to properly apply the template
@@ -383,11 +409,13 @@ The script:
 ### Country List Management
 
 The allowed/blocked country lists can be managed via:
+
 1. Direct editing of `ip-check-config.json`
 
 ### Integration with CI/CD
 
 The git-ip-check helper can be integrated into CI/CD pipelines:
+
 ```bash
 # In your CI script
 if git-ip-check "/path/to/ci-config.json"; then
