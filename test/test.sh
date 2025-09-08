@@ -36,11 +36,14 @@ if [ "$TEST_TYPE" = "--help" ] || [ "$TEST_TYPE" = "-h" ]; then
     echo "  current  - Test with current IP location"
     echo "  bypass   - Test bypass mechanisms"
     echo "  helper   - Test git-ip-check helper"
+    echo "  pull     - Test pull protection"
+    echo "  global   - Test global enable/disable controls"
     echo ""
     echo "Examples:"
     echo "  ./test.sh          # Run all tests"
     echo "  ./test.sh current  # Test current location only"
     echo "  ./test.sh bypass   # Test bypass methods"
+    echo "  ./test.sh pull     # Test pull protection"
     exit 0
 fi
 
@@ -91,26 +94,42 @@ test_bypass_mechanisms() {
     cd "$TEST_REPO"
     git init --quiet
     
-    # Copy the pre-push hook
+    # Copy hooks
     mkdir -p .git/hooks
-    cp ~/.git-templates/hooks/pre-push .git/hooks/
+    cp ~/.git-templates/hooks/pre-push .git/hooks/ 2>/dev/null
+    cp ~/.git-templates/hooks/pre-merge-commit .git/hooks/ 2>/dev/null
     cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null || true
+    cp ~/.git-templates/hooks/git-ip-check .git/hooks/ 2>/dev/null || true
     
-    # Ensure we have a cache file
-    if [ ! -f /tmp/git_ip_cache ]; then
-        curl -s https://ipinfo.io/json > /tmp/git_ip_cache
+    # Test 2.1: Environment variable bypass (push)
+    echo "Testing IPCHECK_BYPASS environment variable (push)..."
+    IPCHECK_BYPASS=1 .git/hooks/pre-push 2>&1 | grep -q "bypassed"
+    show_result $? "Environment variable bypass (push)"
+    
+    # Test 2.2: Environment variable bypass (pull)
+    if [ -f .git/hooks/pre-merge-commit ]; then
+        echo "Testing IPCHECK_BYPASS environment variable (pull)..."
+        IPCHECK_BYPASS=1 .git/hooks/pre-merge-commit 2>&1 | grep -q "bypassed"
+        show_result $? "Environment variable bypass (pull)"
     fi
     
-    # Test 2.1: Environment variable bypass
-    echo "Testing SKIP_IP_CHECK environment variable..."
-    SKIP_IP_CHECK=1 .git/hooks/pre-push 2>&1 | grep -q "Bypassing IP check"
-    show_result $? "Environment variable bypass"
-    
-    # Test 2.2: Repository config bypass
+    # Test 2.3: Repository config bypass
     echo "Testing git config bypass..."
-    git config hooks.allowpush true
+    git config ipcheck.disable true
     .git/hooks/pre-push 2>&1 | grep -q "IP check disabled"
-    show_result $? "Repository config bypass"
+    show_result $? "Repository config bypass (all operations)"
+    
+    # Test 2.4: Operation-specific bypass
+    git config --unset ipcheck.disable
+    git config ipcheck.push.disable true
+    .git/hooks/pre-push 2>&1 | grep -q "disabled.*push"
+    show_result $? "Repository config bypass (push only)"
+    
+    if [ -f .git/hooks/pre-merge-commit ]; then
+        git config ipcheck.pull.disable true
+        .git/hooks/pre-merge-commit 2>&1 | grep -q "disabled.*pull"
+        show_result $? "Repository config bypass (pull only)"
+    fi
     
     # Clean up
     cd - > /dev/null
@@ -203,6 +222,101 @@ test_simulated_push() {
     echo ""
 }
 
+# Test 5: Pull Protection Test
+test_pull_protection() {
+    echo -e "${YELLOW}Test 5: Pull Protection Test${NC}"
+    echo "----------------------------------------"
+    
+    if [ ! -f ~/.git-templates/hooks/pre-merge-commit ]; then
+        echo -e "${YELLOW}Pre-merge-commit hook not installed, skipping pull tests${NC}"
+        echo ""
+        return
+    fi
+    
+    # Create a test repository
+    TEST_REPO="/tmp/test-pull-$$"
+    mkdir -p "$TEST_REPO"
+    cd "$TEST_REPO"
+    git init --quiet
+    
+    # Copy the pull hook
+    mkdir -p .git/hooks
+    cp ~/.git-templates/hooks/pre-merge-commit .git/hooks/
+    cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null || true
+    cp ~/.git-templates/hooks/git-ip-check .git/hooks/ 2>/dev/null || true
+    
+    echo "Simulating pull operation (pre-merge-commit hook will run)..."
+    
+    # Run the pre-merge-commit hook directly
+    .git/hooks/pre-merge-commit
+    RESULT=$?
+    
+    if [ $RESULT -eq 0 ]; then
+        echo -e "${GREEN}✅ Pull would be ALLOWED from your location${NC}"
+    else
+        echo -e "${RED}⛔ Pull would be BLOCKED from your location${NC}"
+    fi
+    
+    # Clean up
+    cd - > /dev/null
+    rm -rf "$TEST_REPO"
+    echo ""
+}
+
+# Test 6: Global Control Test
+test_global_controls() {
+    echo -e "${YELLOW}Test 6: Global Control Test${NC}"
+    echo "----------------------------------------"
+    
+    # Test git-ip-control if available
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+    CONTROL_SCRIPT="$PROJECT_DIR/scripts/git-ip-control"
+    
+    if [ -f "$CONTROL_SCRIPT" ]; then
+        echo "Testing git-ip-control status command..."
+        chmod +x "$CONTROL_SCRIPT"
+        "$CONTROL_SCRIPT" status > /dev/null 2>&1
+        show_result $? "git-ip-control status command"
+    else
+        echo -e "${YELLOW}git-ip-control script not found, testing manual config${NC}"
+    fi
+    
+    # Test global disable
+    echo "Testing global disable..."
+    git config --global ipcheck.global.disable true
+    
+    # Create test repo to verify global disable works
+    TEST_REPO="/tmp/test-global-$$"
+    mkdir -p "$TEST_REPO"
+    cd "$TEST_REPO"
+    git init --quiet
+    
+    mkdir -p .git/hooks
+    cp ~/.git-templates/hooks/pre-push .git/hooks/ 2>/dev/null
+    cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null
+    cp ~/.git-templates/hooks/git-ip-check .git/hooks/ 2>/dev/null
+    
+    .git/hooks/pre-push 2>&1 | grep -q "globally disabled"
+    show_result $? "Global disable functionality"
+    
+    # Clean up global config
+    git config --global --unset ipcheck.global.disable 2>/dev/null
+    
+    # Test operation-specific global disable
+    echo "Testing operation-specific global disable..."
+    git config --global ipcheck.push.disable true
+    
+    .git/hooks/pre-push 2>&1 | grep -q "disabled globally for push"
+    show_result $? "Global push disable functionality"
+    
+    # Clean up
+    git config --global --unset ipcheck.push.disable 2>/dev/null
+    cd - > /dev/null
+    rm -rf "$TEST_REPO"
+    echo ""
+}
+
 # Main test execution
 case "$TEST_TYPE" in
     "current")
@@ -214,11 +328,19 @@ case "$TEST_TYPE" in
     "helper")
         test_helper_script
         ;;
+    "pull")
+        test_pull_protection
+        ;;
+    "global")
+        test_global_controls
+        ;;
     "all"|*)
         test_current_location
         test_bypass_mechanisms
         test_helper_script
         test_simulated_push
+        test_pull_protection
+        test_global_controls
         
         echo -e "${BLUE}========================================${NC}"
         echo -e "${BLUE}         Test Suite Complete            ${NC}"

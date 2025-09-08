@@ -1,0 +1,313 @@
+#!/bin/bash
+
+# git-ip-control: Utility to manage Git IP Guard settings
+# Can be installed to /usr/local/bin/ for system-wide use
+
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Show usage
+show_usage() {
+    echo -e "${CYAN}${BOLD}git-ip-control${NC} - Manage Git IP Guard settings"
+    echo ""
+    echo -e "${BOLD}Usage:${NC}"
+    echo "  git-ip-control <command> [options]"
+    echo ""
+    echo -e "${BOLD}Commands:${NC}"
+    echo -e "  ${BLUE}status${NC}          Show current IP Guard status"
+    echo -e "  ${BLUE}enable${NC}           Enable IP checking (global or repo)"
+    echo -e "  ${BLUE}disable${NC}          Disable IP checking (global or repo)"
+    echo -e "  ${BLUE}config${NC}           Show or modify configuration"
+    echo -e "  ${BLUE}update${NC}           Update existing installations"
+    echo ""
+    echo -e "${BOLD}Options:${NC}"
+    echo -e "  ${YELLOW}--global${NC}        Apply to all repositories (global git config)"
+    echo -e "  ${YELLOW}--repo${NC}          Apply to current repository only"
+    echo -e "  ${YELLOW}--push${NC}          Apply to push operations only"
+    echo -e "  ${YELLOW}--pull${NC}          Apply to pull operations only"
+    echo ""
+    echo -e "${BOLD}Examples:${NC}"
+    echo "  git-ip-control status"
+    echo "  git-ip-control disable --global"
+    echo "  git-ip-control disable --repo --push"
+    echo "  git-ip-control enable --global --pull"
+    echo "  git-ip-control update"
+}
+
+# Show current status
+show_status() {
+    echo -e "${CYAN}${BOLD}Git IP Guard Status${NC}"
+    echo -e "${CYAN}═══════════════════${NC}"
+    echo ""
+    
+    # Check if we're in a git repo
+    IN_REPO=false
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        IN_REPO=true
+        REPO_ROOT=$(git rev-parse --show-toplevel)
+        echo -e "${BLUE}Repository:${NC} $REPO_ROOT"
+    else
+        echo -e "${YELLOW}Not in a git repository${NC}"
+    fi
+    echo ""
+    
+    # Global settings
+    echo -e "${BLUE}Global Settings:${NC}"
+    GLOBAL_DISABLE=$(git config --global --get ipcheck.global.disable)
+    GLOBAL_PUSH_DISABLE=$(git config --global --get ipcheck.push.disable)
+    GLOBAL_PULL_DISABLE=$(git config --global --get ipcheck.pull.disable)
+    
+    if [ "$GLOBAL_DISABLE" = "true" ]; then
+        echo -e "  IP Guard: ${RED}DISABLED (all operations)${NC}"
+    else
+        echo -e "  IP Guard: ${GREEN}ENABLED${NC}"
+        if [ "$GLOBAL_PUSH_DISABLE" = "true" ]; then
+            echo -e "  Push operations: ${RED}DISABLED${NC}"
+        else
+            echo -e "  Push operations: ${GREEN}ENABLED${NC}"
+        fi
+        if [ "$GLOBAL_PULL_DISABLE" = "true" ]; then
+            echo -e "  Pull operations: ${RED}DISABLED${NC}"
+        else
+            echo -e "  Pull operations: ${GREEN}ENABLED${NC}"
+        fi
+    fi
+    echo ""
+    
+    # Repository settings (if in repo)
+    if [ "$IN_REPO" = "true" ]; then
+        echo -e "${BLUE}Repository Settings:${NC}"
+        REPO_DISABLE=$(git config --get ipcheck.disable)
+        REPO_PUSH_DISABLE=$(git config --get ipcheck.push.disable)
+        REPO_PULL_DISABLE=$(git config --get ipcheck.pull.disable)
+        
+        if [ "$REPO_DISABLE" = "true" ]; then
+            echo -e "  IP Guard: ${RED}DISABLED (all operations)${NC}"
+        else
+            echo -e "  IP Guard: ${GREEN}ENABLED (inherits from global)${NC}"
+            if [ "$REPO_PUSH_DISABLE" = "true" ]; then
+                echo -e "  Push operations: ${RED}DISABLED${NC}"
+            else
+                echo -e "  Push operations: ${GREEN}ENABLED (inherits from global)${NC}"
+            fi
+            if [ "$REPO_PULL_DISABLE" = "true" ]; then
+                echo -e "  Pull operations: ${RED}DISABLED${NC}"
+            else
+                echo -e "  Pull operations: ${GREEN}ENABLED (inherits from global)${NC}"
+            fi
+        fi
+        echo ""
+    fi
+    
+    # Installation status
+    echo -e "${BLUE}Installation Status:${NC}"
+    if [ -d "$HOME/.git-templates/hooks" ]; then
+        echo -e "  Template directory: ${GREEN}INSTALLED${NC}"
+        if [ -f "$HOME/.git-templates/hooks/pre-push" ]; then
+            echo -e "  Pre-push hook: ${GREEN}INSTALLED${NC}"
+        else
+            echo -e "  Pre-push hook: ${RED}MISSING${NC}"
+        fi
+        if [ -f "$HOME/.git-templates/hooks/pre-merge-commit" ]; then
+            echo -e "  Pre-merge-commit hook: ${GREEN}INSTALLED${NC}"
+        else
+            echo -e "  Pre-merge-commit hook: ${YELLOW}MISSING (pull protection unavailable)${NC}"
+        fi
+        if [ -f "$HOME/.git-templates/hooks/ip-check-config.json" ]; then
+            echo -e "  Configuration file: ${GREEN}PRESENT${NC}"
+            CONFIG_VERSION=$(cat "$HOME/.git-templates/hooks/ip-check-config.json" | jq -r '.version // "1.0"' 2>/dev/null)
+            echo -e "  Configuration version: ${CYAN}$CONFIG_VERSION${NC}"
+        else
+            echo -e "  Configuration file: ${RED}MISSING${NC}"
+        fi
+    else
+        echo -e "  Template directory: ${RED}NOT INSTALLED${NC}"
+    fi
+    
+    if [ -x "/usr/local/bin/git-ip-check" ]; then
+        echo -e "  System helper: ${GREEN}INSTALLED${NC}"
+    elif [ -f "$HOME/.git-templates/hooks/git-ip-check" ]; then
+        echo -e "  Local helper: ${GREEN}INSTALLED${NC}"
+    else
+        echo -e "  Helper script: ${YELLOW}NOT INSTALLED${NC}"
+    fi
+}
+
+# Enable IP checking
+enable_ip_check() {
+    local scope="$1"
+    local operation="$2"
+    
+    if [ "$scope" = "global" ]; then
+        if [ "$operation" = "push" ]; then
+            git config --global --unset ipcheck.push.disable 2>/dev/null
+            echo -e "${GREEN}✅ Global push protection enabled${NC}"
+        elif [ "$operation" = "pull" ]; then
+            git config --global --unset ipcheck.pull.disable 2>/dev/null
+            echo -e "${GREEN}✅ Global pull protection enabled${NC}"
+        else
+            git config --global --unset ipcheck.global.disable 2>/dev/null
+            git config --global --unset ipcheck.push.disable 2>/dev/null
+            git config --global --unset ipcheck.pull.disable 2>/dev/null
+            echo -e "${GREEN}✅ Global IP Guard enabled (push and pull)${NC}"
+        fi
+    elif [ "$scope" = "repo" ]; then
+        if ! git rev-parse --git-dir > /dev/null 2>&1; then
+            echo -e "${RED}Error: Not in a git repository${NC}"
+            return 1
+        fi
+        
+        if [ "$operation" = "push" ]; then
+            git config --unset ipcheck.push.disable 2>/dev/null
+            echo -e "${GREEN}✅ Repository push protection enabled${NC}"
+        elif [ "$operation" = "pull" ]; then
+            git config --unset ipcheck.pull.disable 2>/dev/null
+            echo -e "${GREEN}✅ Repository pull protection enabled${NC}"
+        else
+            git config --unset ipcheck.disable 2>/dev/null
+            git config --unset ipcheck.push.disable 2>/dev/null
+            git config --unset ipcheck.pull.disable 2>/dev/null
+            echo -e "${GREEN}✅ Repository IP Guard enabled (push and pull)${NC}"
+        fi
+    fi
+}
+
+# Disable IP checking
+disable_ip_check() {
+    local scope="$1"
+    local operation="$2"
+    
+    if [ "$scope" = "global" ]; then
+        if [ "$operation" = "push" ]; then
+            git config --global ipcheck.push.disable true
+            echo -e "${YELLOW}⚠️  Global push protection disabled${NC}"
+        elif [ "$operation" = "pull" ]; then
+            git config --global ipcheck.pull.disable true
+            echo -e "${YELLOW}⚠️  Global pull protection disabled${NC}"
+        else
+            git config --global ipcheck.global.disable true
+            echo -e "${YELLOW}⚠️  Global IP Guard disabled (all operations)${NC}"
+        fi
+    elif [ "$scope" = "repo" ]; then
+        if ! git rev-parse --git-dir > /dev/null 2>&1; then
+            echo -e "${RED}Error: Not in a git repository${NC}"
+            return 1
+        fi
+        
+        if [ "$operation" = "push" ]; then
+            git config ipcheck.push.disable true
+            echo -e "${YELLOW}⚠️  Repository push protection disabled${NC}"
+        elif [ "$operation" = "pull" ]; then
+            git config ipcheck.pull.disable true
+            echo -e "${YELLOW}⚠️  Repository pull protection disabled${NC}"
+        else
+            git config ipcheck.disable true
+            echo -e "${YELLOW}⚠️  Repository IP Guard disabled (all operations)${NC}"
+        fi
+    fi
+}
+
+# Update installation
+update_installation() {
+    echo -e "${BLUE}Updating Git IP Guard installation...${NC}"
+    echo ""
+    
+    # Get script directory
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+    
+    # Check if install script exists
+    if [ ! -f "$PROJECT_DIR/scripts/install.sh" ]; then
+        echo -e "${RED}Error: install.sh not found at $PROJECT_DIR/scripts/install.sh${NC}"
+        echo "Make sure you're running this from the git-ip-guard directory."
+        return 1
+    fi
+    
+    # Run the installer
+    chmod +x "$PROJECT_DIR/scripts/install.sh"
+    "$PROJECT_DIR/scripts/install.sh"
+    
+    echo ""
+    echo -e "${GREEN}✅ Update completed${NC}"
+}
+
+# Parse command line arguments
+COMMAND=""
+SCOPE=""
+OPERATION=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        status|enable|disable|config|update)
+            COMMAND="$1"
+            shift
+            ;;
+        --global)
+            SCOPE="global"
+            shift
+            ;;
+        --repo)
+            SCOPE="repo"
+            shift
+            ;;
+        --push)
+            OPERATION="push"
+            shift
+            ;;
+        --pull)
+            OPERATION="pull"
+            shift
+            ;;
+        --help|-h)
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $1${NC}"
+            echo ""
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+# Default scope if not specified
+if [ -z "$SCOPE" ] && [ "$COMMAND" != "status" ] && [ "$COMMAND" != "update" ]; then
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        SCOPE="repo"
+    else
+        SCOPE="global"
+    fi
+fi
+
+# Execute command
+case "$COMMAND" in
+    status)
+        show_status
+        ;;
+    enable)
+        enable_ip_check "$SCOPE" "$OPERATION"
+        ;;
+    disable)
+        disable_ip_check "$SCOPE" "$OPERATION"
+        ;;
+    update)
+        update_installation
+        ;;
+    config)
+        echo -e "${YELLOW}Configuration management not yet implemented${NC}"
+        echo "Use 'git-ip-control status' to see current settings."
+        ;;
+    *)
+        echo -e "${RED}No command specified${NC}"
+        echo ""
+        show_usage
+        exit 1
+        ;;
+esac

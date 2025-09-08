@@ -110,12 +110,25 @@ get_flag() {
 # Main check function
 check_ip_location() {
     local config_file="$1"
-    local bypass_var="${2:-IPCHECK_BYPASS}"
-    local repo_config_key="${3:-ipcheck.disable}"
+    local operation="${2:-push}"
+    local bypass_var="${3:-IPCHECK_BYPASS}"
+    local repo_config_key="${4:-ipcheck.disable}"
     
     # Check for temporary bypass via environment variable
     if [ "${!bypass_var}" = "1" ]; then
         echo -e "${YELLOW}⚠️  IP check bypassed via $bypass_var environment variable${NC}"
+        return 0
+    fi
+    
+    # Check for global disable via git config
+    if [ "$(git config --global --get ipcheck.global.disable)" = "true" ]; then
+        echo -e "${YELLOW}⚠️  IP check globally disabled${NC}"
+        return 0
+    fi
+    
+    # Check for operation-specific global disable
+    if [ "$(git config --global --get ipcheck.${operation}.disable)" = "true" ]; then
+        echo -e "${YELLOW}⚠️  IP check disabled globally for ${operation} operations${NC}"
         return 0
     fi
     
@@ -125,12 +138,25 @@ check_ip_location() {
             echo -e "${YELLOW}⚠️  IP check disabled for this repository${NC}"
             return 0
         fi
+        
+        # Check for operation-specific repo disable
+        if [ "$(git config --get ipcheck.${operation}.disable)" = "true" ]; then
+            echo -e "${YELLOW}⚠️  IP check disabled for ${operation} operations in this repository${NC}"
+            return 0
+        fi
     fi
     
     # Check if config file exists
     if [ ! -f "$config_file" ]; then
         echo -e "${RED}Error: Configuration file not found at $config_file${NC}"
         return 1
+    fi
+    
+    # Check if this operation is enabled in config
+    local operation_enabled=$(cat "$config_file" | jq -r ".enable_${operation}_check // true" 2>/dev/null)
+    if [ "$operation_enabled" = "false" ]; then
+        echo -e "${YELLOW}⚠️  ${operation^} operations are disabled in configuration${NC}"
+        return 0
     fi
     
     # Get public IP information with fallback
@@ -216,7 +242,12 @@ check_ip_location() {
     
     # If we reach here, the operation is allowed
     local flag=$(get_flag "$country")
-    echo -e "${GREEN}✅ Location verified: $flag $country - Push allowed${NC}"
+    case "$operation" in
+        "push") local operation_display="Push" ;;
+        "pull") local operation_display="Pull" ;;
+        *) local operation_display="Operation" ;;
+    esac
+    echo -e "${GREEN}✅ Location verified: $flag $country - $operation_display allowed${NC}"
     return 0
 }
 
@@ -224,8 +255,9 @@ check_ip_location() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     # Script is being executed directly
     if [ "$#" -lt 1 ]; then
-        echo "Usage: $0 <config-file> [bypass-env-var] [git-config-key]"
-        echo "Example: $0 /path/to/ip-check-config.json IPCHECK_BYPASS ipcheck.disable"
+        echo "Usage: $0 <config-file> [operation] [bypass-env-var] [git-config-key]"
+        echo "Example: $0 /path/to/ip-check-config.json push IPCHECK_BYPASS ipcheck.disable"
+        echo "Example: $0 /path/to/ip-check-config.json pull IPCHECK_BYPASS ipcheck.disable"
         exit 1
     fi
     

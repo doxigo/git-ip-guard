@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Git pre-push hook that uses the git-ip-check helper
+# Git pre-rebase hook that uses the git-ip-check helper for pull/rebase operations
+# This hook runs before a rebase starts (e.g., git pull --rebase)
 
 # Look for git-ip-check in multiple locations
 GIT_IP_CHECK=""
@@ -23,9 +24,10 @@ if [ -z "$GIT_IP_CHECK" ]; then
     # Source the git-ip-check script if available in the git-ip-guard directory
     GIT_IP_GUARD_DIR="$(dirname "$0")/../../../git-ip-guard"
     if [ -f "$GIT_IP_GUARD_DIR/scripts/git-ip-check" ]; then
+        # shellcheck source=/dev/null
         source "$GIT_IP_GUARD_DIR/scripts/git-ip-check"
         CONFIG_FILE="$(dirname "$0")/ip-check-config.json"
-        check_ip_location "$CONFIG_FILE" "push"
+        check_ip_location "$CONFIG_FILE" "pull"
         exit $?
     else
         echo "Error: Cannot find git-ip-check implementation"
@@ -33,7 +35,8 @@ if [ -z "$GIT_IP_CHECK" ]; then
     fi
 fi
 
-# Use the git-ip-check helper with push operation
+# Use the git-ip-check helper with pull operation
 CONFIG_FILE="$(dirname "$0")/ip-check-config.json"
-"$GIT_IP_CHECK" "$CONFIG_FILE" "push"
+"$GIT_IP_CHECK" "$CONFIG_FILE" "pull"
 exit $?
+

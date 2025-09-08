@@ -41,18 +41,18 @@ if [ "$INSTALL_HELPER" = true ]; then
     echo -e "${YELLOW}Installing git-ip-check helper...${NC}"
     
     # Check if git-ip-check exists
-    if [ ! -f "git-ip-check" ]; then
-        echo -e "${RED}Error: git-ip-check not found in current directory${NC}"
+    if [ ! -f "scripts/git-ip-check" ]; then
+        echo -e "${RED}Error: git-ip-check not found in scripts directory${NC}"
         exit 1
     fi
     
     # Check for sudo privileges
     if [ "$EUID" -ne 0 ]; then
         echo -e "${YELLOW}sudo privileges required to install helper to /usr/local/bin${NC}"
-        sudo cp git-ip-check /usr/local/bin/
+        sudo cp scripts/git-ip-check /usr/local/bin/
         sudo chmod +x /usr/local/bin/git-ip-check
     else
-        cp git-ip-check /usr/local/bin/
+        cp scripts/git-ip-check /usr/local/bin/
         chmod +x /usr/local/bin/git-ip-check
     fi
     
@@ -68,393 +68,140 @@ fi
 TEMPLATE_DIR="$HOME/.git-templates"
 HOOKS_DIR="$TEMPLATE_DIR/hooks"
 
+# Check for existing installation and backup config
+UPDATE_MODE=false
+if [ -d "$TEMPLATE_DIR" ]; then
+    UPDATE_MODE=true
+    echo -e "${YELLOW}Existing Git IP Guard installation detected${NC}"
+    
+    # Backup existing config if it exists
+    if [ -f "$HOOKS_DIR/ip-check-config.json" ]; then
+        cp "$HOOKS_DIR/ip-check-config.json" "/tmp/ip-check-config-backup.json"
+        echo -e "${BLUE}Backed up existing configuration${NC}"
+    fi
+fi
+
 # Clean existing setup
 rm -rf $TEMPLATE_DIR
 
 # Create directories
 mkdir -p $HOOKS_DIR
 
-# Create pre-push hook
-cat << 'EOF' > $HOOKS_DIR/pre-push
-#!/bin/bash
+# Copy hooks and configuration files
+echo -e "${BLUE}Installing Git IP Guard hooks...${NC}"
 
-# Check for bypass via environment variable
-if [ "${SKIP_IP_CHECK}" = "1" ]; then
-    echo -e "\033[0;33m⚠️  Bypassing IP check via SKIP_IP_CHECK environment variable\033[0m"
-    exit 0
-fi
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Check for repo-specific disable
-if [ "$(git config --get hooks.allowpush)" = "true" ]; then
-    echo -e "\033[0;33m⚠️  IP check disabled for this repository\033[0m"
-    exit 0
-fi
-
-# Try to use git-ip-check helper if available
-if command -v git-ip-check >/dev/null 2>&1; then
-    # Use the system-wide helper
-    git-ip-check "$(dirname "$0")/ip-check-config.json" SKIP_IP_CHECK hooks.allowpush
-    exit $?
-elif [ -x "$(dirname "$0")/git-ip-check" ]; then
-    # Use local helper if available
-    "$(dirname "$0")/git-ip-check" "$(dirname "$0")/ip-check-config.json" SKIP_IP_CHECK hooks.allowpush
-    exit $?
-fi
-
-# Fallback to inline implementation
-# Function to get country flag emoji
-get_country_flag() {
-    local country=$1
-    case $country in
-        "AD") echo "🇦🇩" ;;
-        "AE") echo "🇦🇪" ;;
-        "AF") echo "🇦🇫" ;;
-        "AG") echo "🇦🇬" ;;
-        "AI") echo "🇦🇮" ;;
-        "AL") echo "🇦🇱" ;;
-        "AM") echo "🇦🇲" ;;
-        "AO") echo "🇦🇴" ;;
-        "AQ") echo "🇦🇶" ;;
-        "AR") echo "🇦🇷" ;;
-        "AS") echo "🇦🇸" ;;
-        "AT") echo "🇦🇹" ;;
-        "AU") echo "🇦🇺" ;;
-        "AW") echo "🇦🇼" ;;
-        "AX") echo "🇦🇽" ;;
-        "AZ") echo "🇦🇿" ;;
-        "BA") echo "🇧🇦" ;;
-        "BB") echo "🇧🇧" ;;
-        "BD") echo "🇧🇩" ;;
-        "BE") echo "🇧🇪" ;;
-        "BF") echo "🇧🇫" ;;
-        "BG") echo "🇧🇬" ;;
-        "BH") echo "🇧🇭" ;;
-        "BI") echo "🇧🇮" ;;
-        "BJ") echo "🇧🇯" ;;
-        "BL") echo "🇧🇱" ;;
-        "BM") echo "🇧🇲" ;;
-        "BN") echo "🇧🇳" ;;
-        "BO") echo "🇧🇴" ;;
-        "BQ") echo "🇧🇶" ;;
-        "BR") echo "🇧🇷" ;;
-        "BS") echo "🇧🇸" ;;
-        "BT") echo "🇧🇹" ;;
-        "BV") echo "🇧🇻" ;;
-        "BW") echo "🇧🇼" ;;
-        "BY") echo "🇧🇾" ;;
-        "BZ") echo "🇧🇿" ;;
-        "CA") echo "🇨🇦" ;;
-        "CC") echo "🇨🇨" ;;
-        "CD") echo "🇨🇩" ;;
-        "CF") echo "🇨🇫" ;;
-        "CG") echo "🇨🇬" ;;
-        "CH") echo "🇨🇭" ;;
-        "CI") echo "🇨🇮" ;;
-        "CK") echo "🇨🇰" ;;
-        "CL") echo "🇨🇱" ;;
-        "CM") echo "🇨🇲" ;;
-        "CN") echo "🇨🇳" ;;
-        "CO") echo "🇨🇴" ;;
-        "CR") echo "🇨🇷" ;;
-        "CU") echo "🇨🇺" ;;
-        "CV") echo "🇨🇻" ;;
-        "CW") echo "🇨🇼" ;;
-        "CX") echo "🇨🇽" ;;
-        "CY") echo "🇨🇾" ;;
-        "CZ") echo "🇨🇿" ;;
-        "DE") echo "🇩🇪" ;;
-        "DJ") echo "🇩🇯" ;;
-        "DK") echo "🇩🇰" ;;
-        "DM") echo "🇩🇲" ;;
-        "DO") echo "🇩🇴" ;;
-        "DZ") echo "🇩🇿" ;;
-        "EC") echo "🇪🇨" ;;
-        "EE") echo "🇪🇪" ;;
-        "EG") echo "🇪🇬" ;;
-        "EH") echo "🇪🇭" ;;
-        "ER") echo "🇪🇷" ;;
-        "ES") echo "🇪🇸" ;;
-        "ET") echo "🇪🇹" ;;
-        "FI") echo "🇫🇮" ;;
-        "FJ") echo "🇫🇯" ;;
-        "FK") echo "🇫🇰" ;;
-        "FM") echo "🇫🇲" ;;
-        "FO") echo "🇫🇴" ;;
-        "FR") echo "🇫🇷" ;;
-        "GA") echo "🇬🇦" ;;
-        "GB") echo "🇬🇧" ;;
-        "GD") echo "🇬🇩" ;;
-        "GE") echo "🇬🇪" ;;
-        "GF") echo "🇬🇫" ;;
-        "GG") echo "🇬🇬" ;;
-        "GH") echo "🇬🇭" ;;
-        "GI") echo "🇬🇮" ;;
-        "GL") echo "🇬🇱" ;;
-        "GM") echo "🇬🇲" ;;
-        "GN") echo "🇬🇳" ;;
-        "GP") echo "🇬🇵" ;;
-        "GQ") echo "🇬🇶" ;;
-        "GR") echo "🇬🇷" ;;
-        "GS") echo "🇬🇸" ;;
-        "GT") echo "🇬🇹" ;;
-        "GU") echo "🇬🇺" ;;
-        "GW") echo "🇬🇼" ;;
-        "GY") echo "🇬🇾" ;;
-        "HK") echo "🇭🇰" ;;
-        "HM") echo "🇭🇲" ;;
-        "HN") echo "🇭🇳" ;;
-        "HR") echo "🇭🇷" ;;
-        "HT") echo "🇭🇹" ;;
-        "HU") echo "🇭🇺" ;;
-        "ID") echo "🇮🇩" ;;
-        "IE") echo "🇮🇪" ;;
-        "IL") echo "🇮🇱" ;;
-        "IM") echo "🇮🇲" ;;
-        "IN") echo "🇮🇳" ;;
-        "IO") echo "🇮🇴" ;;
-        "IQ") echo "🇮🇶" ;;
-        "IR") echo "🇮🇷" ;;
-        "IS") echo "🇮🇸" ;;
-        "IT") echo "🇮🇹" ;;
-        "JE") echo "🇯🇪" ;;
-        "JM") echo "🇯🇲" ;;
-        "JO") echo "🇯🇴" ;;
-        "JP") echo "🇯🇵" ;;
-        "KE") echo "🇰🇪" ;;
-        "KG") echo "🇰🇬" ;;
-        "KH") echo "🇰🇭" ;;
-        "KI") echo "🇰🇮" ;;
-        "KM") echo "🇰🇲" ;;
-        "KN") echo "🇰🇳" ;;
-        "KP") echo "🇰🇵" ;;
-        "KR") echo "🇰🇷" ;;
-        "KW") echo "🇰🇼" ;;
-        "KY") echo "🇰🇾" ;;
-        "KZ") echo "🇰🇿" ;;
-        "LA") echo "🇱🇦" ;;
-        "LB") echo "🇱🇧" ;;
-        "LC") echo "🇱🇨" ;;
-        "LI") echo "🇱🇮" ;;
-        "LK") echo "🇱🇰" ;;
-        "LR") echo "🇱🇷" ;;
-        "LS") echo "🇱🇸" ;;
-        "LT") echo "🇱🇹" ;;
-        "LU") echo "🇱🇺" ;;
-        "LV") echo "🇱🇻" ;;
-        "LY") echo "🇱🇾" ;;
-        "MA") echo "🇲🇦" ;;
-        "MC") echo "🇲🇨" ;;
-        "MD") echo "🇲🇩" ;;
-        "ME") echo "🇲🇪" ;;
-        "MF") echo "🇲🇫" ;;
-        "MG") echo "🇲🇬" ;;
-        "MH") echo "🇲🇭" ;;
-        "MK") echo "🇲🇰" ;;
-        "ML") echo "🇲🇱" ;;
-        "MM") echo "🇲🇲" ;;
-        "MN") echo "🇲🇳" ;;
-        "MO") echo "🇲🇴" ;;
-        "MP") echo "🇲🇵" ;;
-        "MQ") echo "🇲🇶" ;;
-        "MR") echo "🇲🇷" ;;
-        "MS") echo "🇲🇸" ;;
-        "MT") echo "🇲🇹" ;;
-        "MU") echo "🇲🇺" ;;
-        "MV") echo "🇲🇻" ;;
-        "MW") echo "🇲🇼" ;;
-        "MX") echo "🇲🇽" ;;
-        "MY") echo "🇲🇾" ;;
-        "MZ") echo "🇲🇿" ;;
-        "NA") echo "🇳🇦" ;;
-        "NC") echo "🇳🇨" ;;
-        "NE") echo "🇳🇪" ;;
-        "NF") echo "🇳🇫" ;;
-        "NG") echo "🇳🇬" ;;
-        "NI") echo "🇳🇮" ;;
-        "NL") echo "🇳🇱" ;;
-        "NO") echo "🇳🇴" ;;
-        "NP") echo "🇳🇵" ;;
-        "NR") echo "🇳🇷" ;;
-        "NU") echo "🇳🇺" ;;
-        "NZ") echo "🇳🇿" ;;
-        "OM") echo "🇴🇲" ;;
-        "PA") echo "🇵🇦" ;;
-        "PE") echo "🇵🇪" ;;
-        "PF") echo "🇵🇫" ;;
-        "PG") echo "🇵🇬" ;;
-        "PH") echo "🇵🇭" ;;
-        "PK") echo "🇵🇰" ;;
-        "PL") echo "🇵🇱" ;;
-        "PM") echo "🇵🇲" ;;
-        "PN") echo "🇵🇳" ;;
-        "PR") echo "🇵🇷" ;;
-        "PS") echo "🇵🇸" ;;
-        "PT") echo "🇵🇹" ;;
-        "PW") echo "🇵🇼" ;;
-        "PY") echo "🇵🇾" ;;
-        "QA") echo "🇶🇦" ;;
-        "RE") echo "🇷🇪" ;;
-        "RO") echo "🇷🇴" ;;
-        "RS") echo "🇷🇸" ;;
-        "RU") echo "🇷🇺" ;;
-        "RW") echo "🇷🇼" ;;
-        "SA") echo "🇸🇦" ;;
-        "SB") echo "🇸🇧" ;;
-        "SC") echo "🇸🇨" ;;
-        "SD") echo "🇸🇩" ;;
-        "SE") echo "🇸🇪" ;;
-        "SG") echo "🇸🇬" ;;
-        "SH") echo "🇸🇭" ;;
-        "SI") echo "🇸🇮" ;;
-        "SJ") echo "🇸🇯" ;;
-        "SK") echo "🇸🇰" ;;
-        "SL") echo "🇸🇱" ;;
-        "SM") echo "🇸🇲" ;;
-        "SN") echo "🇸🇳" ;;
-        "SO") echo "🇸🇴" ;;
-        "SR") echo "🇸🇷" ;;
-        "SS") echo "🇸🇸" ;;
-        "ST") echo "🇸🇹" ;;
-        "SV") echo "🇸🇻" ;;
-        "SX") echo "🇸🇽" ;;
-        "SY") echo "🇸🇾" ;;
-        "SZ") echo "🇸🇿" ;;
-        "TC") echo "🇹🇨" ;;
-        "TD") echo "🇹🇩" ;;
-        "TF") echo "🇹🇫" ;;
-        "TG") echo "🇹🇬" ;;
-        "TH") echo "🇹🇭" ;;
-        "TJ") echo "🇹🇯" ;;
-        "TK") echo "🇹🇰" ;;
-        "TL") echo "🇹🇱" ;;
-        "TM") echo "🇹🇲" ;;
-        "TN") echo "🇹🇳" ;;
-        "TO") echo "🇹🇴" ;;
-        "TR") echo "🇹🇷" ;;
-        "TT") echo "🇹🇹" ;;
-        "TV") echo "🇹🇻" ;;
-        "TW") echo "🇹🇼" ;;
-        "TZ") echo "🇹🇿" ;;
-        "UA") echo "🇺🇦" ;;
-        "UG") echo "🇺🇬" ;;
-        "UM") echo "🇺🇲" ;;
-        "US") echo "🇺🇸" ;;
-        "UY") echo "🇺🇾" ;;
-        "UZ") echo "🇺🇿" ;;
-        "VA") echo "🇻🇦" ;;
-        "VC") echo "🇻🇨" ;;
-        "VE") echo "🇻🇪" ;;
-        "VG") echo "🇻🇬" ;;
-        "VI") echo "🇻🇮" ;;
-        "VN") echo "🇻🇳" ;;
-        "VU") echo "🇻🇺" ;;
-        "WF") echo "🇼🇫" ;;
-        "WS") echo "🇼🇸" ;;
-        "XK") echo "🇽🇰" ;;
-        "YE") echo "🇾🇪" ;;
-        "YT") echo "🇾🇹" ;;
-        "ZA") echo "🇿🇦" ;;
-        "ZM") echo "🇿🇲" ;;
-        "ZW") echo "🇿🇼" ;;
-        *) echo "🏳️" ;;
-    esac
-}
-
-# Get IP info on-demand
-IP_INFO=$(curl -s --connect-timeout 5 --max-time 10 https://ifconfig.co/json 2>/dev/null)
-
-# Check if primary service failed, try fallback
-if [ -z "$IP_INFO" ] || echo "$IP_INFO" | grep -q "Forbidden" || echo "$IP_INFO" | grep -q "Rate limit"; then
-    echo -e "\033[0;33mPrimary IP service unavailable, trying fallback...\033[0m" >&2
-    IP_INFO=$(curl -s --connect-timeout 5 --max-time 10 https://ipinfo.io/json 2>/dev/null)
-fi
-
-# Check if we got valid response
-if [ -z "$IP_INFO" ] || echo "$IP_INFO" | grep -q "Forbidden"; then
-    echo -e "\033[0;31m⛔ Error: Could not detect IP information.\033[0m"
-    echo -e "\033[0;31mFor security reasons, operations from unverifiable locations are blocked.\033[0m"
+# Copy pre-push hook
+if [ -f "$PROJECT_DIR/hooks/pre-push" ]; then
+    cp "$PROJECT_DIR/hooks/pre-push" "$HOOKS_DIR/pre-push"
+    chmod +x "$HOOKS_DIR/pre-push"
+    echo -e "${GREEN}✅ Installed pre-push hook${NC}"
+else
+    echo -e "${RED}Error: pre-push hook not found at $PROJECT_DIR/hooks/pre-push${NC}"
     exit 1
 fi
 
-# Extract country (handle both ifconfig.co and ipinfo.io formats)
-COUNTRY=$(echo "$IP_INFO" | jq -r '.country_iso // .country // empty' 2>/dev/null | tr '[:lower:]' '[:upper:]')
-
-# Validate country
-if [ -z "$COUNTRY" ] || [ "$COUNTRY" = "null" ]; then
-    echo -e "\033[0;31m⛔ Error: Could not determine country.\033[0m"
-    echo -e "\033[0;31mFor security reasons, operations from unverifiable locations are blocked.\033[0m"
-    exit 1
+# Copy pre-merge-commit hook for pull protection
+if [ -f "$PROJECT_DIR/hooks/pre-merge-commit" ]; then
+    cp "$PROJECT_DIR/hooks/pre-merge-commit" "$HOOKS_DIR/pre-merge-commit"
+    chmod +x "$HOOKS_DIR/pre-merge-commit"
+    echo -e "${GREEN}✅ Installed pre-merge-commit hook (pull protection)${NC}"
+else
+    echo -e "${YELLOW}Warning: pre-merge-commit hook not found, pull protection not available${NC}"
 fi
 
-# List of sanctioned countries
-SANCTIONED_COUNTRIES=(BY CU IR KP RU SY)
-
-# Check if country is sanctioned
-if [[ " ${SANCTIONED_COUNTRIES[@]} " =~ " $COUNTRY " ]]; then
-    COUNTRY_FLAG=$(get_country_flag "$COUNTRY")
-    echo -e "\033[0;31m⛔ Git push blocked: Access denied from sanctioned country: $COUNTRY_FLAG $COUNTRY\033[0m"
-    exit 1
+# Copy pre-rebase hook for pull --rebase protection
+if [ -f "$PROJECT_DIR/hooks/pre-rebase" ]; then
+    cp "$PROJECT_DIR/hooks/pre-rebase" "$HOOKS_DIR/pre-rebase"
+    chmod +x "$HOOKS_DIR/pre-rebase"
+    echo -e "${GREEN}✅ Installed pre-rebase hook (rebase protection)${NC}"
+else
+    echo -e "${YELLOW}Warning: pre-rebase hook not found, rebase protection not available${NC}"
 fi
 
-# Special check for Ukraine regions
-if [[ "$COUNTRY" == "UA" ]]; then
-    REGION=$(echo "$IP_INFO" | jq -r '.region // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    CITY=$(echo "$IP_INFO" | jq -r '.city // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    
-    if [[ "$REGION" =~ (crimea|donetsk|luhansk) ]] || [[ "$CITY" =~ (crimea|donetsk|luhansk|sevastopol|simferopol) ]]; then
-        echo -e "\033[0;31m⛔ Git push blocked: Access denied from sanctioned region: $REGION/$CITY\033[0m"
-        exit 1
+# Copy post-merge hook for fast-forward pull detection
+if [ -f "$PROJECT_DIR/hooks/post-merge" ]; then
+    cp "$PROJECT_DIR/hooks/post-merge" "$HOOKS_DIR/post-merge"
+    chmod +x "$HOOKS_DIR/post-merge"
+    echo -e "${GREEN}✅ Installed post-merge hook (fast-forward detection)${NC}"
+else
+    echo -e "${YELLOW}Warning: post-merge hook not found, fast-forward detection not available${NC}"
+fi
+
+# Handle configuration file
+if [ "$UPDATE_MODE" = "true" ] && [ -f "/tmp/ip-check-config-backup.json" ]; then
+    # Check if backup config needs migration
+    BACKUP_VERSION=$(cat "/tmp/ip-check-config-backup.json" | jq -r '.version // "1.0"' 2>/dev/null)
+    if [ "$BACKUP_VERSION" = "1.0" ] || [ "$BACKUP_VERSION" = "null" ]; then
+        echo -e "${YELLOW}Migrating configuration from v1.0 to v2.0...${NC}"
+        # Create new config with old blocked countries but new structure
+        OLD_BLOCKED=$(cat "/tmp/ip-check-config-backup.json" | jq -r '.blocked_countries[]' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+        if [ -n "$OLD_BLOCKED" ]; then
+            cat "$PROJECT_DIR/config/ip-check-config.json" | jq --arg blocked "$OLD_BLOCKED" '.blocked_countries = ($blocked | split(","))' > "$HOOKS_DIR/ip-check-config.json"
+        else
+            cp "$PROJECT_DIR/config/ip-check-config.json" "$HOOKS_DIR/ip-check-config.json"
+        fi
+        echo -e "${GREEN}✅ Configuration migrated to v2.0${NC}"
+    else
+        # Use backup as-is
+        cp "/tmp/ip-check-config-backup.json" "$HOOKS_DIR/ip-check-config.json"
+        echo -e "${GREEN}✅ Restored existing configuration${NC}"
     fi
+    rm "/tmp/ip-check-config-backup.json"
+else
+    # Fresh installation - copy default config
+    cp "$PROJECT_DIR/config/ip-check-config.json" "$HOOKS_DIR/ip-check-config.json"
+    echo -e "${GREEN}✅ Installed default configuration${NC}"
 fi
 
-# If we reach here, the push is allowed
-COUNTRY_FLAG=$(get_country_flag "$COUNTRY")
-if [ "$COUNTRY_FLAG" = "🏳️" ]; then COUNTRY_FLAG=""; fi
-echo -e "\033[0;32m✅ Location verified: $COUNTRY_FLAG $COUNTRY - Push allowed\033[0m"
-
-EOF
-
-# Make the hook executable
-chmod +x $HOOKS_DIR/pre-push
-
-# Create a simple config file for the hook
-cat << 'EOF' > $HOOKS_DIR/ip-check-config.json
-{
-  "blocked_countries": ["BY", "CU", "IR", "KP", "RU", "SY"],
-  "blocked_regions": {
-    "UA": ["crimea", "donetsk", "luhansk", "sevastopol", "simferopol"]
-  },
-  "ip_services": [
-    "https://ipinfo.io/json",
-    "https://ifconfig.co/json"
-  ],
-  "cache_duration": 300,
-  "log_file": "~/.git_ip_error.log"
-}
-EOF
+# Copy helper script if available
+if [ -f "$PROJECT_DIR/scripts/git-ip-check" ]; then
+    cp "$PROJECT_DIR/scripts/git-ip-check" "$HOOKS_DIR/git-ip-check"
+    chmod +x "$HOOKS_DIR/git-ip-check"
+    echo -e "${GREEN}✅ Installed git-ip-check helper${NC}"
+fi
 
 # Set the template directory
 git config --global init.templateDir $TEMPLATE_DIR
 
-echo -e "${GREEN}✅ Git hooks installation complete!${NC}"
+echo -e "${GREEN}✅ Git IP Guard v2.0 installation complete!${NC}"
 echo ""
-echo "What's been installed:"
-echo "  • Pre-push hook in ~/.git-templates/hooks/"
-echo "  • Configuration file for IP checking"
+if [ "$UPDATE_MODE" = "true" ]; then
+    echo -e "${BLUE}Updated from previous version:${NC}"
+else
+    echo -e "${BLUE}What's been installed:${NC}"
+fi
+echo "  • Pre-push hook (blocks sanctioned countries on push)"
+echo "  • Pre-merge-commit hook (blocks sanctioned countries on pull merge)"
+echo "  • Pre-rebase hook (blocks sanctioned countries on pull rebase)"
+echo "  • Post-merge hook (detects fast-forward pulls)"
+echo "  • Enhanced configuration with pull/push controls"
 echo "  • Global git template directory configured"
 
-if [ -x "/usr/local/bin/git-ip-check" ] || [ -x "./git-ip-check" ]; then
-    echo "  • git-ip-check helper available"
+if [ -x "/usr/local/bin/git-ip-check" ]; then
+    echo "  • System-wide git-ip-check helper available"
+elif [ -f "$HOOKS_DIR/git-ip-check" ]; then
+    echo "  • Local git-ip-check helper installed"
 fi
 
+echo ""
+echo -e "${YELLOW}New in v2.0:${NC}"
+echo "  • Pull protection (git pull/fetch with merge)"
+echo "  • Global and operation-specific disable options"
+echo "  • Seamless updates with config preservation"
 echo ""
 echo "All new repositories will automatically use this template."
 echo ""
 echo "For existing repositories, run:"
 echo -e "  ${BLUE}git init${NC}  (inside the repository)"
+echo -e "  ${BLUE}./scripts/apply-to-existing-repos.sh${NC}  (bulk update)"
 echo ""
-echo "To bypass the IP check temporarily:"
-echo -e "  ${BLUE}SKIP_IP_CHECK=1 git push${NC}"
-echo ""
-echo "To permanently disable for a specific repo:"
-echo -e "  ${BLUE}git config hooks.allowpush true${NC}"
+echo -e "${BLUE}Bypass options:${NC}"
+echo "  Temporary bypass: ${BLUE}IPCHECK_BYPASS=1 git push${NC}"
+echo "  Repo disable: ${BLUE}git config ipcheck.disable true${NC}"
+echo "  Global disable: ${BLUE}git config --global ipcheck.global.disable true${NC}"
+echo "  Disable pulls only: ${BLUE}git config --global ipcheck.pull.disable true${NC}"
+echo "  Disable pushes only: ${BLUE}git config --global ipcheck.push.disable true${NC}"

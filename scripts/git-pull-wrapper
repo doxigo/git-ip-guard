@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Git Pull Wrapper with IP Guard Protection
+# This script wraps the git pull command to ensure IP checking on all pull operations
+# including fast-forward pulls
+
+# Function to run IP check
+run_ip_check() {
+    local config_file="$1"
+    
+    # Look for git-ip-check in multiple locations
+    local git_ip_check=""
+    if [ -x "/usr/local/bin/git-ip-check" ]; then
+        git_ip_check="/usr/local/bin/git-ip-check"
+    elif [ -x "$(git rev-parse --git-dir)/hooks/git-ip-check" ]; then
+        git_ip_check="$(git rev-parse --git-dir)/hooks/git-ip-check"
+    else
+        # Try to find it relative to this script
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [ -x "$script_dir/git-ip-check" ]; then
+            git_ip_check="$script_dir/git-ip-check"
+        fi
+    fi
+    
+    if [ -n "$git_ip_check" ] && [ -f "$config_file" ]; then
+        "$git_ip_check" "$config_file" "pull"
+        return $?
+    else
+        echo "Warning: git-ip-check not found, skipping IP verification"
+        return 0
+    fi
+}
+
+# Check if we're in a git repository
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "Error: Not in a git repository"
+    exit 1
+fi
+
+# Look for configuration file in hooks directory
+GIT_DIR=$(git rev-parse --git-dir)
+CONFIG_FILE="$GIT_DIR/hooks/ip-check-config.json"
+
+# Run IP check before executing pull
+if [ -f "$CONFIG_FILE" ]; then
+    echo "🔍 Checking IP location before pull..."
+    run_ip_check "$CONFIG_FILE"
+    IP_CHECK_RESULT=$?
+    
+    if [ $IP_CHECK_RESULT -ne 0 ]; then
+        echo ""
+        echo "❌ Pull blocked due to IP restrictions"
+        echo ""
+        echo "To bypass this check, use:"
+        echo "   IPCHECK_BYPASS=1 git pull $*"
+        echo ""
+        echo "Or to disable IP checking for this repository:"
+        echo "   git config ipcheck.pull.disable true"
+        echo ""
+        exit 1
+    fi
+    echo ""
+fi
+
+# If IP check passed or no config found, execute the actual git pull
+exec git pull "$@"

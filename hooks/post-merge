@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Git post-merge hook that checks IP for fast-forward pulls
+# This hook runs after merge operations, including fast-forward pulls
+# The first argument indicates if it was a squash merge (0 = normal merge, 1 = squash)
+
+SQUASH_MERGE="$1"
+
+# Only proceed if this is a normal merge (not squash) and likely from a pull
+if [ "$SQUASH_MERGE" = "0" ]; then
+    # Check if we're in the middle of a pull operation by looking for MERGE_HEAD
+    # If MERGE_HEAD doesn't exist, this was likely a fast-forward pull
+    if [ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+        # This appears to be a fast-forward pull, so check IP
+        
+        # Look for git-ip-check in multiple locations
+        GIT_IP_CHECK=""
+        if [ -x "/usr/local/bin/git-ip-check" ]; then
+            GIT_IP_CHECK="/usr/local/bin/git-ip-check"
+        elif [ -x "$(dirname "$0")/git-ip-check" ]; then
+            GIT_IP_CHECK="$(dirname "$0")/git-ip-check"
+        else
+            # Try to find it in the same directory as this script
+            SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            if [ -x "$SCRIPT_DIR/git-ip-check" ]; then
+                GIT_IP_CHECK="$SCRIPT_DIR/git-ip-check"
+            fi
+        fi
+
+        # If git-ip-check is found, run the check
+        if [ -n "$GIT_IP_CHECK" ]; then
+            CONFIG_FILE="$(dirname "$0")/ip-check-config.json"
+            if [ -f "$CONFIG_FILE" ]; then
+                echo "🔍 Checking IP location for pull operation..."
+                "$GIT_IP_CHECK" "$CONFIG_FILE" "pull"
+                IP_CHECK_RESULT=$?
+                
+                # If IP check failed, we can't undo the merge easily in post-merge
+                # But we can warn the user and suggest actions
+                if [ $IP_CHECK_RESULT -ne 0 ]; then
+                    echo ""
+                    echo "⚠️  WARNING: Pull completed but IP check failed!"
+                    echo "⚠️  This pull may violate IP restrictions."
+                    echo ""
+                    echo "To undo this pull, run:"
+                    echo "   git reset --hard HEAD~1"
+                    echo ""
+                    echo "To bypass IP checking next time, use:"
+                    echo "   IPCHECK_BYPASS=1 git pull"
+                    echo ""
+                    # Don't exit with error code as the merge is already complete
+                fi
+            fi
+        fi
+    fi
+fi
+
+exit 0

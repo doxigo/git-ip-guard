@@ -59,23 +59,45 @@ apply_to_repo() {
     
     # Get the directory where this script is located
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local project_dir="$(dirname "$script_dir")"
     
-    # Copy the pre-push hook from the current directory
-    if cp "$script_dir/pre-push" "$git_dir/hooks/pre-push" 2>/dev/null; then
+    # Copy the pre-push hook from hooks directory
+    if cp "$project_dir/hooks/pre-push" "$git_dir/hooks/pre-push" 2>/dev/null; then
         chmod +x "$git_dir/hooks/pre-push"
     else
         echo -e "  ${RED}❌ Failed to copy pre-push hook to: $repo_dir${NC}"
         return 1
     fi
     
-    # Copy the config file from the current directory
-    if cp "$script_dir/ip-check-config.json" "$git_dir/hooks/ip-check-config.json" 2>/dev/null; then
+    # Copy the pre-merge-commit hook for pull protection
+    if cp "$project_dir/hooks/pre-merge-commit" "$git_dir/hooks/pre-merge-commit" 2>/dev/null; then
+        chmod +x "$git_dir/hooks/pre-merge-commit"
+    else
+        echo -e "  ${YELLOW}⚠️  Failed to copy pre-merge-commit hook (pull protection not available)${NC}"
+    fi
+    
+    # Copy the pre-rebase hook for rebase protection
+    if cp "$project_dir/hooks/pre-rebase" "$git_dir/hooks/pre-rebase" 2>/dev/null; then
+        chmod +x "$git_dir/hooks/pre-rebase"
+    else
+        echo -e "  ${YELLOW}⚠️  Failed to copy pre-rebase hook (rebase protection not available)${NC}"
+    fi
+    
+    # Copy the post-merge hook for fast-forward pull detection
+    if cp "$project_dir/hooks/post-merge" "$git_dir/hooks/post-merge" 2>/dev/null; then
+        chmod +x "$git_dir/hooks/post-merge"
+    else
+        echo -e "  ${YELLOW}⚠️  Failed to copy post-merge hook (fast-forward detection not available)${NC}"
+    fi
+    
+    # Copy the config file from config directory
+    if cp "$project_dir/config/ip-check-config.json" "$git_dir/hooks/ip-check-config.json" 2>/dev/null; then
         # Also copy the git-ip-check helper if it exists
-        if [ -f "$script_dir/git-ip-check" ]; then
-            cp "$script_dir/git-ip-check" "$git_dir/hooks/git-ip-check" 2>/dev/null
+        if [ -f "$project_dir/scripts/git-ip-check" ]; then
+            cp "$project_dir/scripts/git-ip-check" "$git_dir/hooks/git-ip-check" 2>/dev/null
             chmod +x "$git_dir/hooks/git-ip-check" 2>/dev/null
         fi
-        echo -e "  ${GREEN}✅ Applied to: $repo_dir${NC}"
+        echo -e "  ${GREEN}✅ Applied to: $repo_dir (push + pull + rebase + fast-forward protection)${NC}"
         return 0
     else
         echo -e "  ${RED}❌ Failed to copy config file to: $repo_dir${NC}"
@@ -138,10 +160,11 @@ else
     SEARCH_DIRS=("$@")
 fi
 
-# Check if required files exist in the current directory
+# Check if required files exist in the project directories
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ ! -f "$script_dir/pre-push" ] || [ ! -f "$script_dir/ip-check-config.json" ]; then
-    echo -e "${RED}Error: Required files (pre-push, ip-check-config.json) not found in current directory.${NC}"
+project_dir="$(dirname "$script_dir")"
+if [ ! -f "$project_dir/hooks/pre-push" ] || [ ! -f "$project_dir/config/ip-check-config.json" ]; then
+    echo -e "${RED}Error: Required files (hooks/pre-push, config/ip-check-config.json) not found.${NC}"
     echo -e "${RED}Please make sure you're running this script from the git-ip-guard directory.${NC}"
     exit 1
 fi
