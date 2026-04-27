@@ -51,34 +51,48 @@ fi
 test_current_location() {
     echo -e "${YELLOW}Test 1: Current Location Check${NC}"
     echo "----------------------------------------"
-    
-    # Get current IP info
-    IP_INFO=$(curl -s https://ipinfo.io/json)
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Failed to fetch IP information${NC}"
+
+    # Use the same multi-provider helper the hooks use, so this test reflects
+    # what would actually happen on a push/pull.
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+    LIB="$PROJECT_DIR/scripts/lib/ip-common.sh"
+    if [ ! -r "$LIB" ]; then
+        echo -e "${RED}Cannot locate ip-common.sh at $LIB${NC}"
         return 1
     fi
-    
-    # Save to cache for testing
-    echo "$IP_INFO" > /tmp/git_ip_cache
-    
-    # Extract location info
-    COUNTRY=$(echo "$IP_INFO" | jq -r '.country // "Unknown"')
-    CITY=$(echo "$IP_INFO" | jq -r '.city // "Unknown"')
-    IP=$(echo "$IP_INFO" | jq -r '.ip // "Unknown"')
-    
+    # shellcheck source=/dev/null
+    . "$LIB"
+
+    IP_INFO=$(IPCHECK_NO_CACHE=1 get_ip_info)
+    if [ -z "$IP_INFO" ]; then
+        echo -e "${RED}Failed to fetch IP information from any provider${NC}"
+        return 1
+    fi
+
+    COUNTRY=$(printf '%s' "$IP_INFO" | jq -r '.country // "Unknown"')
+    CITY=$(printf '%s' "$IP_INFO"    | jq -r '.city // "Unknown"')
+    IP=$(printf '%s' "$IP_INFO"      | jq -r '.ip // "Unknown"')
+    PROVIDER=$(printf '%s' "$IP_INFO" | jq -r '.provider // "unknown"')
+
     echo "Your current location:"
     echo "  IP: $IP"
     echo "  Country: $COUNTRY"
     echo "  City: $CITY"
+    echo "  Source: $PROVIDER"
     echo ""
-    
-    # Test if the pre-push hook would block
-    BLOCKED_COUNTRIES=("BY" "CU" "IR" "KP" "RU" "SY")
-    if [[ " ${BLOCKED_COUNTRIES[@]} " =~ " $COUNTRY " ]]; then
-        echo -e "${RED}⛔ Your current location ($COUNTRY) would be BLOCKED${NC}"
+
+    # Read the blocklist from the actual config rather than hardcoding it.
+    CONFIG="$HOME/.git-templates/hooks/ip-check-config.json"
+    [ -f "$CONFIG" ] || CONFIG="$PROJECT_DIR/config/ip-check-config.json"
+    if [ -f "$CONFIG" ] && jq -e . "$CONFIG" >/dev/null 2>&1; then
+        if jq -e --arg c "$COUNTRY" '(.blocked_countries // []) | map(ascii_upcase) | index($c)' "$CONFIG" >/dev/null; then
+            echo -e "${RED}⛔ Your current location ($COUNTRY) would be BLOCKED${NC}"
+        else
+            echo -e "${GREEN}✅ Your current location ($COUNTRY) is ALLOWED${NC}"
+        fi
     else
-        echo -e "${GREEN}✅ Your current location ($COUNTRY) is ALLOWED${NC}"
+        echo -e "${YELLOW}No config available to evaluate against.${NC}"
     fi
     echo ""
 }
@@ -94,12 +108,13 @@ test_bypass_mechanisms() {
     cd "$TEST_REPO"
     git init --quiet
     
-    # Copy hooks
+    # Copy hooks + helper + library
     mkdir -p .git/hooks
     cp ~/.git-templates/hooks/pre-push .git/hooks/ 2>/dev/null
     cp ~/.git-templates/hooks/pre-merge-commit .git/hooks/ 2>/dev/null
     cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null || true
     cp ~/.git-templates/hooks/git-ip-check .git/hooks/ 2>/dev/null || true
+    cp ~/.git-templates/hooks/ip-common.sh .git/hooks/ 2>/dev/null || true
     
     # Test 2.1: Environment variable bypass (push)
     echo "Testing IPCHECK_BYPASS environment variable (push)..."

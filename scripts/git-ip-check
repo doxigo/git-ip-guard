@@ -1,266 +1,224 @@
 #!/bin/bash
 
-# git-ip-check: A reusable IP location checker for git hooks
-# Can be installed to /usr/local/bin/ for system-wide use
+# git-ip-check: IP location checker for git hooks.
+# Validates the user's public IP location against an allowlist/blocklist
+# loaded from a JSON config file.
 
-# Colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+set -u
 
-# Function to get IP info with fallback
-get_ip_info() {
-    local ip_info=""
-    local attempts=0
-    local max_attempts=2
-    
-    # Try primary service (ifconfig.co)
-    ip_info=$(curl -s --connect-timeout 5 --max-time 10 https://ifconfig.co/json 2>/dev/null)
-    
-    # Check if we got a forbidden error, rate limit error or empty response
-    if [ -z "$ip_info" ] || echo "$ip_info" | grep -q "Forbidden" || echo "$ip_info" | grep -q "Rate limit exceeded" || echo "$ip_info" | grep -q "429"; then
-        echo -e "${YELLOW}Primary IP service unavailable, trying fallback...${NC}" >&2
-        
-        # Try fallback service (ipinfo.io)
-        ip_info=$(curl -s --connect-timeout 5 --max-time 10 https://ipinfo.io/json 2>/dev/null)
-        
-        # If fallback also fails, try one more time with ipinfo.io after a brief pause
-        if [ -z "$ip_info" ] || echo "$ip_info" | grep -q "Forbidden"; then
-            sleep 2
-            ip_info=$(curl -s --connect-timeout 5 --max-time 10 https://ipinfo.io/json 2>/dev/null)
-        fi
+# Locate and source the shared library.
+_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_lib_candidates=(
+    "/usr/local/lib/git-ip-guard/ip-common.sh"
+    "$HOME/.git-templates/hooks/ip-common.sh"
+    "$_self_dir/lib/ip-common.sh"
+    "$_self_dir/ip-common.sh"
+)
+_lib_loaded=0
+for _lib in "${_lib_candidates[@]}"; do
+    if [ -r "$_lib" ]; then
+        # shellcheck source=/dev/null
+        . "$_lib"
+        _lib_loaded=1
+        break
     fi
-    
-    echo "$ip_info"
+done
+if [ "$_lib_loaded" != "1" ]; then
+    echo "Error: ip-common.sh helper library not found. Reinstall git-ip-guard." >&2
+    exit 1
+fi
+
+# Append a one-line entry to the configured log file. Path is expanded safely
+# without eval; failures are silent.
+log_event() {
+    local config_file="$1"
+    local message="$2"
+    local raw expanded
+    raw=$(jq -r '.log_file // "~/.git_ip_error.log"' "$config_file" 2>/dev/null)
+    [ -z "$raw" ] && raw="$HOME/.git_ip_error.log"
+    expanded=$(expand_tilde "$raw")
+    local dir
+    dir=$(dirname "$expanded")
+    mkdir -p "$dir" 2>/dev/null
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" >> "$expanded" 2>/dev/null
 }
 
-# Function to normalize country code from different services
-normalize_country_code() {
-    local ip_info="$1"
-    local country=""
-    
-    # Try to extract country code
-    # ifconfig.co uses 'country_iso' for ISO code
-    # ipinfo.io uses 'country' for ISO code
-    country=$(echo "$ip_info" | jq -r '.country_iso // .country // empty' 2>/dev/null)
-    
-    # Convert to uppercase and trim
-    country=$(echo "$country" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
-    
-    echo "$country"
+# Validate the config file is well-formed JSON before we trust any of its
+# values. Returns 0 if good, 1 otherwise.
+validate_config() {
+    local config_file="$1"
+    [ -f "$config_file" ] || { echo -e "${RED}Error: Configuration file not found at $config_file${NC}"; return 1; }
+    if ! jq -e . "$config_file" >/dev/null 2>&1; then
+        echo -e "${RED}Error: Configuration file is not valid JSON: $config_file${NC}"
+        return 1
+    fi
+    return 0
 }
 
-# Function to get city info
-get_city_info() {
-    local ip_info="$1"
-    local city=""
-    
-    # Try to extract city (handle different formats)
-    city=$(echo "$ip_info" | jq -r '.city // empty' 2>/dev/null)
-    
-    echo "$city"
+# Returns 0 if $1 is in the JSON array stored under $2 in the config.
+# Match is case-insensitive on the country code.
+country_in_list() {
+    local code="$1" list_key="$2" config_file="$3"
+    local match
+    match=$(jq -r --arg code "$code" --arg key "$list_key" '
+        (.[$key] // [])
+        | map(ascii_upcase)
+        | index($code)
+    ' "$config_file" 2>/dev/null)
+    [ "$match" != "null" ] && [ -n "$match" ]
 }
 
-# Function to get IP address
-get_ip_address() {
-    local ip_info="$1"
-    local ip=""
-    
-    # Try to extract IP
-    ip=$(echo "$ip_info" | jq -r '.ip // empty' 2>/dev/null)
-    
-    echo "$ip"
-}
-
-# Function to get country flag
-get_flag() {
+# Determine the operation display name (capitalized).
+op_display() {
     case "$1" in
-        "NO") echo "🇳🇴" ;;
-        "US") echo "🇺🇸" ;;
-        "GB") echo "🇬🇧" ;;
-        "DE") echo "🇩🇪" ;;
-        "FR") echo "🇫🇷" ;;
-        "CA") echo "🇨🇦" ;;
-        "AU") echo "🇦🇺" ;;
-        "JP") echo "🇯🇵" ;;
-        "CN") echo "🇨🇳" ;;
-        "IN") echo "🇮🇳" ;;
-        "BR") echo "🇧🇷" ;;
-        "MX") echo "🇲🇽" ;;
-        "IT") echo "🇮🇹" ;;
-        "ES") echo "🇪🇸" ;;
-        "NL") echo "🇳🇱" ;;
-        "SE") echo "🇸🇪" ;;
-        "CH") echo "🇨🇭" ;;
-        "PL") echo "🇵🇱" ;;
-        "TR") echo "🇹🇷" ;;
-        "KR") echo "🇰🇷" ;;
-        "IR") echo "🇮🇷" ;;
-        "RU") echo "🇷🇺" ;;
-        "BY") echo "🇧🇾" ;;
-        "CU") echo "🇨🇺" ;;
-        "SY") echo "🇸🇾" ;;
-        "KP") echo "🇰🇵" ;;
-        "UA") echo "🇺🇦" ;;
-        *) echo "" ;;
+        push) echo "Push" ;;
+        pull) echo "Pull" ;;
+        commit) echo "Commit" ;;
+        *) echo "Operation" ;;
     esac
 }
 
-# Main check function
+# Main check entry point. Arguments:
+#   $1 config-file
+#   $2 operation (push|pull|...)
+#   $3 bypass env var name (default: IPCHECK_BYPASS)
+#   $4 git config key for repo-level disable (default: ipcheck.disable)
 check_ip_location() {
     local config_file="$1"
     local operation="${2:-push}"
     local bypass_var="${3:-IPCHECK_BYPASS}"
     local repo_config_key="${4:-ipcheck.disable}"
-    
-    # Check for temporary bypass via environment variable
-    if [ "${!bypass_var}" = "1" ]; then
-        echo -e "${YELLOW}⚠️  IP check bypassed via $bypass_var environment variable${NC}"
+
+    # 1. Bypass via env var.
+    if [ "${!bypass_var:-}" = "1" ]; then
+        echo -e "${YELLOW}⚠️  IP check bypassed via $bypass_var${NC}"
         return 0
     fi
-    
-    # Check for global disable via git config
-    if [ "$(git config --global --get ipcheck.global.disable)" = "true" ]; then
+
+    # 2. Global disables via git config.
+    if [ "$(git config --global --get ipcheck.global.disable 2>/dev/null)" = "true" ]; then
         echo -e "${YELLOW}⚠️  IP check globally disabled${NC}"
         return 0
     fi
-    
-    # Check for operation-specific global disable
-    if [ "$(git config --global --get ipcheck.${operation}.disable)" = "true" ]; then
+    if [ "$(git config --global --get "ipcheck.${operation}.disable" 2>/dev/null)" = "true" ]; then
         echo -e "${YELLOW}⚠️  IP check disabled globally for ${operation} operations${NC}"
         return 0
     fi
-    
-    # Check for repo-local disable via git config (if in a git repo)
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        if [ "$(git config --get "$repo_config_key")" = "true" ]; then
+
+    # 3. Repo-level disables.
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        if [ "$(git config --get "$repo_config_key" 2>/dev/null)" = "true" ]; then
             echo -e "${YELLOW}⚠️  IP check disabled for this repository${NC}"
             return 0
         fi
-        
-        # Check for operation-specific repo disable
-        if [ "$(git config --get ipcheck.${operation}.disable)" = "true" ]; then
+        if [ "$(git config --get "ipcheck.${operation}.disable" 2>/dev/null)" = "true" ]; then
             echo -e "${YELLOW}⚠️  IP check disabled for ${operation} operations in this repository${NC}"
             return 0
         fi
     fi
-    
-    # Check if config file exists
-    if [ ! -f "$config_file" ]; then
-        echo -e "${RED}Error: Configuration file not found at $config_file${NC}"
-        return 1
-    fi
-    
-    # Check if this operation is enabled in config
-    local operation_enabled=$(cat "$config_file" | jq -r ".enable_${operation}_check // true" 2>/dev/null)
-    if [ "$operation_enabled" = "false" ]; then
+
+    # 4. Validate config.
+    validate_config "$config_file" || return 1
+
+    # 5. Operation-specific enable flag from config.
+    local enabled
+    enabled=$(jq -r ".enable_${operation}_check // true" "$config_file" 2>/dev/null)
+    if [ "$enabled" = "false" ]; then
         echo -e "${YELLOW}⚠️  ${operation^} operations are disabled in configuration${NC}"
         return 0
     fi
-    
-    # Get public IP information with fallback
-    local ip_info=$(get_ip_info)
-    if [ -z "$ip_info" ] || echo "$ip_info" | grep -q "Forbidden"; then
-        echo -e "${RED}Error: Could not detect IP information (access forbidden).${NC}"
-        echo -e "${RED}For security reasons, operations from unverifiable locations are blocked.${NC}"
-        
-        # Log the error
-        local log_file=$(cat "$config_file" | jq -r '.log_file // "~/.git_ip_error.log"' 2>/dev/null)
-        log_file=$(eval echo "$log_file")
-        echo "[$(date)] IP check failed - access forbidden or no response" >> "$log_file"
-        
+
+    # 6. Fetch IP info via shared lib (multi-provider, cached).
+    local ip_info
+    ip_info=$(get_ip_info)
+    if [ -z "$ip_info" ]; then
+        echo -e "${RED}Error: Could not detect IP information from any provider.${NC}"
+        echo -e "${RED}Operation blocked because location is unverifiable.${NC}"
+        echo -e "${YELLOW}Set GIT_IP_GUARD_VERBOSE=1 to see provider errors,${NC}"
+        echo -e "${YELLOW}or use ${bypass_var}=1 git ${operation} to bypass.${NC}"
+        log_event "$config_file" "$(op_display "$operation") blocked: no IP provider responded"
         return 1
     fi
-    
-    # Extract information
-    local country=$(normalize_country_code "$ip_info")
-    local city=$(get_city_info "$ip_info")
+
+    local country city ip
+    country=$(printf '%s' "$ip_info" | jq -r '.country // empty')
+    city=$(printf '%s' "$ip_info" | jq -r '.city // empty')
+    ip=$(printf '%s' "$ip_info" | jq -r '.ip // empty')
     [ -z "$city" ] && city="Unknown"
-    local ip=$(get_ip_address "$ip_info")
-    
-    # Validate country code
-    if [ -z "$country" ] || [ "$country" = "null" ]; then
-        echo -e "${RED}Error: Could not determine country.${NC}"
-        echo -e "${RED}For security reasons, operations from unverifiable locations are blocked.${NC}"
-        
-        # Log the error
-        local log_file=$(cat "$config_file" | jq -r '.log_file // "~/.git_ip_error.log"' 2>/dev/null)
-        log_file=$(eval echo "$log_file")
-        echo "[$(date)] IP check failed - country could not be determined" >> "$log_file"
-        
+
+    # 7. Validate country: must be exactly two uppercase letters.
+    if ! [[ "$country" =~ ^[A-Z]{2}$ ]]; then
+        echo -e "${RED}Error: Could not determine country (got '${country}').${NC}"
+        echo -e "${RED}Operation blocked because location is unverifiable.${NC}"
+        log_event "$config_file" "$(op_display "$operation") blocked: invalid country code from provider (ip=${ip:-unknown})"
         return 1
     fi
-    
-    # Read configuration
-    local blocked_countries_json=$(cat "$config_file" | jq -r '.blocked_countries // empty' 2>/dev/null)
-    local blocked_regions_json=$(cat "$config_file" | jq -r '.blocked_regions // empty' 2>/dev/null)
-    
-    # Check if country is in blocked list
-    if [ -n "$blocked_countries_json" ] && [ "$blocked_countries_json" != "null" ]; then
-        # Convert JSON array to space-separated string
-        local blocked_countries=$(echo "$blocked_countries_json" | jq -r '.[]' 2>/dev/null | tr '\n' ' ')
-        
-        if [[ " $blocked_countries " =~ " $country " ]]; then
-            echo -e "${RED}⛔ Git push blocked: Access denied from sanctioned country: $country${NC}"
-            local flag=$(get_flag "$country")
-            echo -e "${YELLOW}IP: $ip, Location: $flag $city, $country${NC}"
-            
-            # Log the block
-            local log_file=$(cat "$config_file" | jq -r '.log_file // "~/.git_ip_error.log"' 2>/dev/null)
-            log_file=$(eval echo "$log_file")
-            echo "[$(date)] Blocked push from $country (IP: $ip)" >> "$log_file"
-            
+
+    local flag
+    flag=$(get_flag "$country")
+
+    # 8. Decide using mode: allowlist | blocklist | both (default: blocklist).
+    local mode
+    mode=$(jq -r '.mode // "blocklist"' "$config_file" 2>/dev/null)
+    case "$mode" in allowlist|blocklist|both) ;; *) mode="blocklist" ;; esac
+
+    if [ "$mode" = "allowlist" ] || [ "$mode" = "both" ]; then
+        local has_allow
+        has_allow=$(jq -r '(.allowed_countries // []) | length' "$config_file" 2>/dev/null)
+        if [ "$has_allow" -gt 0 ] && ! country_in_list "$country" "allowed_countries" "$config_file"; then
+            echo -e "${RED}⛔ ${operation^} blocked: $flag $country is not on the allowed list${NC}"
+            echo -e "${YELLOW}IP: ${ip:-unknown}, Location: $flag $city, $country${NC}"
+            log_event "$config_file" "$(op_display "$operation") blocked: $country not in allowlist (ip=${ip:-unknown})"
             return 1
         fi
     fi
-    
-    # Special check for blocked regions (e.g., specific Ukraine regions)
-    if [ -n "$blocked_regions_json" ] && [ "$blocked_regions_json" != "null" ]; then
-        local blocked_regions_for_country=$(echo "$blocked_regions_json" | jq -r ".\"$country\"[]? // empty" 2>/dev/null | tr '\n' ' ')
-        
-        if [ -n "$blocked_regions_for_country" ]; then
-            local region=$(echo "$ip_info" | jq -r '.region // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
-            local city_lower=$(echo "$city" | tr '[:upper:]' '[:lower:]')
-            
-            for blocked_region in $blocked_regions_for_country; do
-                blocked_region=$(echo "$blocked_region" | tr '[:upper:]' '[:lower:]')
-                if [[ "$region" =~ $blocked_region ]] || [[ "$city_lower" =~ $blocked_region ]]; then
-                    echo -e "${RED}⛔ Git push blocked: Access denied from sanctioned region: $region/$city${NC}"
-                    echo -e "${YELLOW}IP: $ip, Country: $country${NC}"
-                    
-                    # Log the block
-                    local log_file=$(cat "$config_file" | jq -r '.log_file // "~/.git_ip_error.log"' 2>/dev/null)
-                    log_file=$(eval echo "$log_file")
-                    echo "[$(date)] Blocked push from $country/$region (IP: $ip)" >> "$log_file"
-                    
-                    return 1
-                fi
-            done
+
+    if [ "$mode" = "blocklist" ] || [ "$mode" = "both" ]; then
+        if country_in_list "$country" "blocked_countries" "$config_file"; then
+            echo -e "${RED}⛔ ${operation^} blocked: access denied from sanctioned country $flag $country${NC}"
+            echo -e "${YELLOW}IP: ${ip:-unknown}, Location: $flag $city, $country${NC}"
+            log_event "$config_file" "$(op_display "$operation") blocked from $country (ip=${ip:-unknown})"
+            return 1
         fi
     fi
-    
-    # If we reach here, the operation is allowed
-    local flag=$(get_flag "$country")
-    case "$operation" in
-        "push") local operation_display="Push" ;;
-        "pull") local operation_display="Pull" ;;
-        *) local operation_display="Operation" ;;
-    esac
-    echo -e "${GREEN}✅ Location verified: $flag $country - $operation_display allowed${NC}"
+
+    # 9. Region-level block (e.g., specific Ukrainian regions).
+    local has_regions
+    has_regions=$(jq -r --arg c "$country" '(.blocked_regions[$c] // []) | length' "$config_file" 2>/dev/null)
+    if [ "$has_regions" -gt 0 ]; then
+        local region region_lower city_lower hit
+        region=$(printf '%s' "$ip_info" | jq -r '.region // empty')
+        region_lower=$(printf '%s' "$region" | tr '[:upper:]' '[:lower:]')
+        city_lower=$(printf '%s' "$city"   | tr '[:upper:]' '[:lower:]')
+        hit=$(jq -r --arg c "$country" --arg r "$region_lower" --arg ci "$city_lower" '
+            (.blocked_regions[$c] // [])
+            | map(ascii_downcase)
+            | map(select(. as $b | ($r | contains($b)) or ($ci | contains($b))))
+            | first // empty
+        ' "$config_file" 2>/dev/null)
+        if [ -n "$hit" ]; then
+            echo -e "${RED}⛔ ${operation^} blocked: sanctioned region $hit ($flag $country)${NC}"
+            echo -e "${YELLOW}IP: ${ip:-unknown}, Location: $city, $region, $country${NC}"
+            log_event "$config_file" "$(op_display "$operation") blocked from $country/$hit (ip=${ip:-unknown})"
+            return 1
+        fi
+    fi
+
+    echo -e "${GREEN}✅ Location verified: $flag $country - $(op_display "$operation") allowed${NC}"
     return 0
 }
 
-# If script is being sourced, don't execute
+# Direct invocation entry point.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    # Script is being executed directly
     if [ "$#" -lt 1 ]; then
-        echo "Usage: $0 <config-file> [operation] [bypass-env-var] [git-config-key]"
-        echo "Example: $0 /path/to/ip-check-config.json push IPCHECK_BYPASS ipcheck.disable"
-        echo "Example: $0 /path/to/ip-check-config.json pull IPCHECK_BYPASS ipcheck.disable"
+        cat <<USAGE
+Usage: $0 <config-file> [operation] [bypass-env-var] [git-config-key]
+Examples:
+  $0 /path/to/ip-check-config.json push
+  $0 /path/to/ip-check-config.json pull IPCHECK_BYPASS ipcheck.disable
+USAGE
         exit 1
     fi
-    
     check_ip_location "$@"
     exit $?
 fi

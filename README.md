@@ -1,662 +1,290 @@
-# Git IP Guard v2.0
+# Git IP Guard v2.1
 
-A comprehensive security tool that prevents git pushes and pulls from sanctioned countries using git hooks, with granular control and management features.
+A developer-side reminder that prevents accidental git pushes and pulls from sanctioned countries. Runs as a set of git hooks that check your public IP geolocation before push, pull (merge), pull (rebase), and fast-forward pulls.
 
-## Context
+## What this is — and what it isn't
 
-There have been a lot of issues for developers living in sanctioned countries, which is quite unfortunate since they don't really have anything to do with the political side of things.
+Git IP Guard is a **local guardrail**, not a security control.
 
-Git IP Guard v2.0 - a tool that enforces location-based restrictions on git operations (push and pull). While it's important to comply with regulations, it's equally important to remember that behind every blocked operation is a developer trying to contribute to open source, learn, or simply do their job.
+- It runs entirely on the developer's machine, in standard git hooks.
+- A determined user can bypass it with `IPCHECK_BYPASS=1`, `git push --no-verify`, by editing `.git/hooks/`, by using a VPN, or by removing the tool.
+- For real enforcement (CI checks, server-side validation, branch protection), you need server-side controls. This tool is for the case where someone *wants* compliance and wants the friendly reminder.
 
-The tool includes bypass mechanisms because sometimes compliance requirements conflict with humanitarian considerations. It's transparent about what it's doing (showing your location with country flags) and provides clear options for exceptions.
+## Why this exists
 
-This isn't a celebration of restrictions, but rather a technical implementation of an unfortunate reality. I hope for a future where such tools become unnecessary and all developers can contribute freely regardless of their geography.
-
-## Screenshots
-
-### ✅ Push Allowed
-
-![Git push allowed from safe location](screenshots/git-ip-guard--allowed.png)
-
-### ⛔ Push Blocked
-
-![Git push blocked from sanctioned location](screenshots/git-ip-guard--blocked.png)
-
-### 📊 Git IP Info Command
-
-![Git IP info showing current location and git configuration](screenshots/git-ip-guard--git-ip-info.png)
+Sanctions affect a lot of people who have nothing to do with the politics. This tool helps developers who need to demonstrate good-faith compliance with location-based restrictions while keeping clear escape hatches when those restrictions conflict with day-to-day work. It is transparent about what it does and does not promise.
 
 ## Features
 
-- 🛡️ Blocks git push and pull operations from sanctioned countries
-- 📍 Automatic IP location detection with country flag display
-- 🎨 Color-coded terminal prompts with clear feedback
-- 🌍 Shows country flags for visual location confirmation (🇳🇴 🇺🇸 🇬🇧 etc.)
-- ⚙️ Granular control over push/pull operations (global and repository-specific)
-- 🔧 Easy installation, updates, and uninstallation
-- 📦 Works with both new and existing repositories
-- 🧪 Comprehensive test suite for all features
-- 📊 `git-ip-info` command to check your IP and Git configuration
-- 🎛️ `git-ip-control` command for easy management of all settings
-- 🔄 Seamless updates that preserve existing configurations
+- Blocks `git push`, `git pull` (merge & rebase), and fast-forward pulls when location can be determined and matches the blocklist.
+- **Multi-provider IP geolocation** with automatic fallback: ipinfo.io → ipwho.is → api.country.is → freeipapi.com. Validates JSON and country code so a Cloudflare challenge or a malformed response can no longer be silently treated as "sanctioned".
+- **Local cache** (5 min TTL) — one network round-trip across many git operations.
+- **Fail-closed by default**: if no provider can verify your location, the operation is blocked and you get a clear message (and a bypass hint) instead of a misleading "sanctioned" warning.
+- **Allowlist, blocklist, or both** — selectable via `mode` in the config.
+- **Granular bypass**: env var, repo-level git config, or global git config; per-operation (push/pull) or all.
+- **Region-level rules** for cases where ISO country code isn't enough (e.g. Crimea/Donetsk/Luhansk under UA).
+- `git-ip-info` and `git-ip-control` companion commands for status and configuration.
+- One shared library (`scripts/lib/ip-common.sh`) — no duplication of flag tables or country data across hooks.
 
-## What's New in v2.0
+## Screenshots
 
-🎆 **Major new features and improvements:**
+### ✅ Push allowed
+![Git push allowed from safe location](screenshots/git-ip-guard--allowed.png)
 
-- **🔒 Comprehensive Pull Protection**: Git pulls are now blocked from sanctioned countries in ALL scenarios:
-  - **Merge pulls** via `pre-merge-commit` hook
-  - **Rebase pulls** via `pre-rebase` hook  
-  - **Fast-forward pulls** via wrapper script that intercepts all `git pull` commands
-  - **Post-merge detection** via `post-merge` hook for additional security
-- **⚙️ Granular Controls**: Enable/disable push and pull operations independently at global or repository level
-- **🎛️ Management Utility**: New `git-ip-control` command for easy configuration management
-- **🔄 Seamless Updates**: Automatic detection and migration of v1.0 configurations to v2.0
-- **🧪 Enhanced Testing**: New test categories for pull protection and global controls
-- **📊 Improved Status**: Comprehensive status reporting of all settings and installation state
-- **🔧 Better Architecture**: Cleaner separation between operations with shared helper logic
+### ⛔ Push blocked
+![Git push blocked from sanctioned location](screenshots/git-ip-guard--blocked.png)
 
-**Backward Compatibility**: All existing v1.0 installations can be seamlessly upgraded without losing configuration.
+### 📊 `git-ip-info`
+![Git IP info showing current location and git configuration](screenshots/git-ip-guard--git-ip-info.png)
 
 ## Requirements
 
-- macOS with Homebrew
-- Git
-- Bash/Zsh shell
-- `jq` (JSON processor)
-- `curl` (for IP detection)
+- bash 3.2+ (macOS default works) or any modern Linux shell
+- `git`, `curl`, `jq`
+
+```bash
+# macOS
+brew install jq
+# Debian / Ubuntu
+sudo apt-get install jq
+```
 
 ## Installation
 
-### Quick Start
+```bash
+git clone https://github.com/doxigo/git-ip-guard.git
+cd git-ip-guard
+./scripts/install.sh
+```
 
-1. Clone this repository:
+The installer copies hooks, the helper script, the shared library, and the default config into `~/.git-templates/hooks/` and points `init.templateDir` there. Every `git init` and `git clone` after that picks up the hooks automatically.
 
-   ```bash
-   git clone https://github.com/doxigo/git-ip-guard.git
-   cd git-ip-guard
-   ```
-
-2. Install jq if not already installed:
-
-   ```bash
-   brew install jq
-   ```
-
-3. Run the installation script:
-
-   ```bash
-   chmod +x scripts/install.sh
-   ./scripts/install.sh
-   ```
-
-   **For updates**: If you already have Git IP Guard installed, the script will automatically detect this and preserve your existing configuration while upgrading to v2.0.
-
-4. **Optional**: Enable comprehensive fast-forward pull protection:
-
-   ```bash
-   # This sets up a wrapper that intercepts ALL git pull commands
-   ./scripts/setup-fastforward-protection.sh
-   ```
-   
-   This adds protection for fast-forward pulls that Git hooks cannot catch. After setup, **all** `git pull` commands will be checked, including fast-forward and "already up to date" scenarios.
-
-5. For existing repositories, you have two options:
-
-   **Option A**: Apply to individual repos
-
-   ```bash
-   cd /path/to/your/repo
-   git init
-   ```
-
-   **Option B**: Bulk apply to multiple repos
-
-   ```bash
-   # Interactive mode - will prompt before overwriting existing hooks
-   ./scripts/apply-to-existing-repos.sh
-
-   # Force update mode - automatically overwrites existing hooks
-   ./scripts/apply-to-existing-repos.sh --force
-   ```
-
-### Installation Options
+For system-wide CLI access (`git-ip-info`, `git-ip-control`, `git-ip-check` from any directory):
 
 ```bash
-# Basic installation (git hooks only)
-./scripts/install.sh
-
-# Install with system-wide helper (requires sudo)
 ./scripts/install.sh --install-helper
 ```
 
-### Installing System-Wide Commands
-
-#### git-ip-info Command
-
-The `git-ip-info` command provides a quick way to check your current IP location and Git configuration:
+For existing repos, run:
 
 ```bash
-# Install system-wide (requires sudo)
-sudo cp scripts/git-ip-info /usr/local/bin/
-sudo chmod +x /usr/local/bin/git-ip-info
+# Most common: all repos directly under ~/Sites, overwrite existing hooks, no prompts
+./scripts/apply-to-existing-repos.sh -f ~/Sites
 
-# Now you can use it from anywhere
-git-ip-info
+# Multiple parent dirs at once
+./scripts/apply-to-existing-repos.sh -f ~/Sites ~/code ~/Desktop
+
+# Repos are nested deeper (e.g. ~/Sites/clients/acme/repo) — opt into recursive search
+./scripts/apply-to-existing-repos.sh -f --recursive ~/Sites
+
+# Specific depth (1 = direct children, 2 = one level of nesting, …)
+./scripts/apply-to-existing-repos.sh -f --depth 2 ~/Sites
+
+# Common dev dirs, fully non-interactive
+./scripts/apply-to-existing-repos.sh -f -y
+
+# Sweep every repo under $HOME (recursive, slow but exhaustive)
+./scripts/apply-to-existing-repos.sh --all --force
+
+# Interactive (menu + per-repo prompts)
+./scripts/apply-to-existing-repos.sh
 ```
 
-#### git-ip-control Command
+**By default the search only descends one level** into each directory — that matches the common case where each repo sits directly under a parent like `~/Sites`. Pass `--recursive` (or `--depth N`, or `--all`) to go deeper.
 
-The `git-ip-control` command provides easy management of all Git IP Guard settings:
+**Flags:**
+
+| Flag | Effect |
+|---|---|
+| `--force`, `-f` | Overwrite existing hooks without the per-repo "Overwrite? (y/N)" prompt. |
+| `--yes`, `-y` | Skip the directory-picker menu; defaults to the common dev dirs (`~/Desktop`, `~/Sites`, `~/Projects`, `~/dev`, `~/code`, `~/src`, `~/repos`, …). |
+| `--recursive`, `-r` | Descend into nested directories. Default is direct children only. |
+| `--depth N` | Explicit max depth (`1` = direct children, the default). Overrides `--recursive`. |
+| `--all`, `-a` | Scan the entire `$HOME` recursively. Heavy folders (`Library`, `node_modules`, `.npm`, `.cache`, `target`, `build`, `vendor`, virtualenvs, etc.) are pruned, and a heartbeat is printed while `find` runs so you can tell it's alive. |
+
+### Updating
+
+Re-run `./scripts/install.sh`. It detects an existing install, backs up the config, deep-merges your customisations on top of the latest defaults, and writes it back. You won't lose your blocklist.
+
+### Uninstalling
 
 ```bash
-# Install system-wide (requires sudo)
-sudo cp scripts/git-ip-control /usr/local/bin/
-sudo chmod +x /usr/local/bin/git-ip-control
-
-# Now you can use it from anywhere
-git-ip-control status
-git-ip-control disable --global --pull
-git-ip-control enable --repo --push
-```
-
-## Uninstallation
-
-To completely remove Git IP Guard:
-
-```bash
-chmod +x scripts/uninstall.sh
 ./scripts/uninstall.sh
-
 ```
 
 ## Usage
 
-Once installed:
+After installation, a normal `git push` looks like:
 
-1. When you run `git push` or `git pull`, the system checks your IP location on-demand
-2. Git operations will be blocked if you're in a sanctioned country
-3. The hooks display your location with country flag for transparency
-4. Use `git-ip-control status` to see all current settings and status
-
-### Pull Protection User Experience
-
-With comprehensive pull protection enabled, you'll see:
-
-```bash
-# Example pull with dual protection
-$ git pull origin main
-🔍 Checking IP location before pull...
-✅ Location verified: 🇳🇴 NO - Pull allowed
-
-✅ Location verified: 🇳🇴 NO - Pull allowed  # From Git hook
-Updating a1b2c3d..e4f5g6h
-Fast-forward
- README.md | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+```text
+$ git push
+✅ Location verified: 🇩🇪 DE - Push allowed
+…
 ```
 
-The **dual protection** ensures IP checking works for:
-- Fast-forward pulls (wrapper script)
-- Already up-to-date scenarios (wrapper script)
-- Merge commits (Git hooks)
-- Rebase operations (Git hooks)
+A blocked location looks like:
 
-### Checking Your IP and Git Configuration
-
-Use the `git-ip-info` command to quickly check your current IP location and Git configuration:
-
-```bash
-git-ip-info
+```text
+$ git push
+⛔ Push blocked: access denied from sanctioned country 🇮🇷 IR
+IP: 1.2.3.4, Location: 🇮🇷 Tehran, IR
+error: failed to push some refs
 ```
 
-This command displays:
+When location cannot be verified at all (every provider failed):
 
-- Your Git user name and email (both global and local if in a repository)
-- Your current IP address and location with country flag
-- ISP/Organization information
-- Git IP Guard status (whether your location is restricted)
-- Any active bypass settings
+```text
+Error: Could not detect IP information from any provider.
+Operation blocked because location is unverifiable.
+Set GIT_IP_GUARD_VERBOSE=1 to see provider errors,
+or use IPCHECK_BYPASS=1 git push to bypass.
+```
 
+This is a behaviour change from v2.0, which previously accepted invalid responses and could falsely classify the user as being in a sanctioned country. **v2.1 fails closed.**
 
-## Sanctioned Countries/Regions
+### `git-ip-info`
 
-Git operations (push and pull) are blocked from:
+Shows your detected IP, location, ISP, timezone, the provider that answered, and how the current config would treat your location.
 
-- 🇧🇾 Belarus (BY)
-- 🇨🇺 Cuba (CU)
-- 🇮🇷 Iran (IR)
-- 🇰🇵 North Korea (KP)
-- 🇷🇺 Russia (RU)
-- 🇸🇾 Syria (SY)
-- 🇺🇦 Specific regions of Ukraine:
-  - Crimea
-  - Donetsk Oblast
-  - Luhansk Oblast
+```bash
+git-ip-info                    # cached, fast
+git-ip-info --no-cache         # bypass the local cache
+git-ip-info --verbose          # also print provider errors
+```
+
+### `git-ip-control`
+
+```bash
+git-ip-control status                    # show all settings
+git-ip-control enable  --global          # enable everywhere
+git-ip-control disable --global          # disable everywhere
+git-ip-control disable --repo --pull     # disable only pulls in this repo
+git-ip-control enable  --repo --push     # enable only pushes in this repo
+```
+
+## Configuration
+
+Default config (`~/.git-templates/hooks/ip-check-config.json`):
+
+```json
+{
+  "version": "2.1",
+  "mode": "blocklist",
+  "blocked_countries": ["BY", "CU", "IR", "KP", "RU", "SY"],
+  "allowed_countries": [],
+  "blocked_regions": {
+    "UA": ["crimea", "donetsk", "luhansk"]
+  },
+  "enable_push_check": true,
+  "enable_pull_check": true,
+  "log_file": "~/.git_ip_error.log"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `mode` | `blocklist` (default), `allowlist`, or `both`. |
+| `blocked_countries` | ISO-3166-1 alpha-2 codes that are denied. |
+| `allowed_countries` | ISO-3166-1 alpha-2 codes that are permitted. **Only enforced when `mode` is `allowlist` or `both`** — in v2.0 this field existed but was silently ignored. |
+| `blocked_regions` | Per-country list of region/city substrings to block (case-insensitive). |
+| `enable_push_check` / `enable_pull_check` | Disable a whole operation type without touching git config. |
+| `log_file` | Path for block/error log entries. `~` is expanded safely (no `eval`). |
+
+## Bypass options
+
+| Scope | Command |
+|---|---|
+| One command | `IPCHECK_BYPASS=1 git push` |
+| This repo, all ops | `git config ipcheck.disable true` |
+| This repo, push only | `git config ipcheck.push.disable true` |
+| This repo, pull only | `git config ipcheck.pull.disable true` |
+| Everywhere, all ops | `git config --global ipcheck.global.disable true` |
+| Everywhere, push only | `git config --global ipcheck.push.disable true` |
+| Everywhere, pull only | `git config --global ipcheck.pull.disable true` |
+
+## Known limitations
+
+- **`git push --no-verify` skips all client-side hooks.** This is unavoidable in client-side enforcement.
+- **Fast-forward pulls bypass `pre-merge-commit`.** The included `post-merge` hook detects fast-forwards and warns *after* the fact, but cannot block them. For real fast-forward coverage, run `./scripts/setup-fastforward-protection.sh`, which installs a `git pull-guarded` alias and (optionally) a shell wrapper that intercepts `git pull`. This shell wrapper writes to your `.zshrc` / `.bashrc`, so review the script before opting in.
+- **Geolocation can lag.** ISP databases are updated on a delay; brand-new prefixes may resolve to the wrong country. Use `git-ip-info` to see what the providers actually return.
+- **VPN / proxy use is not detected.** This tool only sees the IP your traffic leaves from.
+- This is **not a security control.** See "What this is — and what it isn't" above.
+
+## IP geolocation providers
+
+In order of preference, the following are queried until one succeeds:
+
+| Service | URL | Notes |
+|---|---|---|
+| ipinfo.io | `https://ipinfo.io/json` | 50k req/mo free, HTTPS, no key. Reliable. |
+| ipwho.is | `https://ipwho.is/` | Unlimited free, HTTPS, no key. Newer. |
+| api.country.is | `https://api.country.is/` | Country only — light fallback. |
+| freeipapi.com | `https://freeipapi.com/api/json` | 60 req/min free. |
+
+You can override the order with the `GIT_IP_GUARD_PROVIDERS` env var:
+
+```bash
+export GIT_IP_GUARD_PROVIDERS="ipwho.is|https://ipwho.is/ ipinfo.io|https://ipinfo.io/json"
+```
+
+`ifconfig.co` was removed in v2.1: it is now consistently behind a Cloudflare bot challenge that returns HTML (not JSON), which the v2.0 detector mishandled and which caused false "sanctioned country" warnings on machines with otherwise normal IPs.
+
+## Caching
+
+Successful IP lookups are cached at `~/.cache/git-ip-guard/last.json` for 5 minutes. Override:
+
+```bash
+export GIT_IP_GUARD_CACHE_TTL=900    # 15 min
+export GIT_IP_GUARD_CACHE_TTL=0      # disable caching entirely
+IPCHECK_NO_CACHE=1 git push          # one-off bypass
+```
+
+## What changed in v2.1
+
+| | v2.0 | v2.1 |
+|---|---|---|
+| Fetch failure handling | Silent: empty country could match the blocklist | **Fails closed** with a clear message |
+| Provider list | ifconfig.co → ipinfo.io | ipinfo.io → ipwho.is → country.is → freeipapi.com |
+| Response validation | Substring-match on "Forbidden" / "429" | Strict: must be JSON with a usable country |
+| `allowed_countries` | Defined but ignored | Enforced when `mode` is `allowlist`/`both` |
+| Caching | None — every git op = network call | 5 min on-disk cache |
+| Log path expansion | `eval echo` (command-injection prone) | `${path/#\~/$HOME}` |
+| Flag table | Duplicated in two scripts | Generated dynamically from country code |
+| Country-name table | Duplicated and incomplete | One copy in shared lib, full ISO list |
+| Config validation | None | `jq -e .` before reading any value |
 
 ## Testing
 
-Run the comprehensive test suite:
-
 ```bash
-./test/test.sh          # Run all tests
-./test/test.sh current  # Test current location only
-./test/test.sh bypass   # Test bypass mechanisms
-./test/test.sh pull     # Test pull protection
-./test/test.sh global   # Test global enable/disable controls
-./test/test.sh helper   # Test git-ip-check helper
+./test/test.sh           # full suite
+./test/test.sh current   # just check current location
+./test/test.sh bypass    # test the bypass mechanisms
+./test/test.sh pull      # test pull-side hooks
+./test/ci-test.sh        # mock-country CI tests
 ```
 
-The test will show:
+## Project layout
 
-- Your current location with country flag
-- Whether pushes and pulls are allowed or blocked
-- Verification of all bypass methods
-- Global and repository-specific control functionality
-
-To manually test with different locations:
-1. Switch to a VPN location (try a sanctioned country like Russia)
-2. Run the test script again
-
-## How It Works
-
-### Push Protection
-1. When you run `git push`, the `pre-push` hook checks your IP location
-
-### Pull Protection (Comprehensive Coverage)
-Git IP Guard v2.0 provides layered pull protection covering all scenarios:
-
-1. **Fast-forward pulls**: Wrapper script intercepts `git pull` commands **before** Git starts
-2. **Merge pulls**: `pre-merge-commit` hook checks IP when Git creates merge commits  
-3. **Rebase pulls**: `pre-rebase` hook checks IP during `git pull --rebase` operations
-4. **Post-merge detection**: `post-merge` hook provides additional security layer
-
-**Why layered protection?** Different pull scenarios trigger different Git hooks. The wrapper ensures **no pull operation** can bypass IP checking, regardless of Git's internal behavior.
-
-### IP Detection Process
-1. Uses `ifconfig.co` as primary service (more reliable, provides ISO country codes)
-2. Automatically falls back to `ipinfo.io` if primary service is unavailable
-3. Verifies if your country is in the sanctioned list
-4. If not sanctioned, the operation proceeds normally with country flag display
-5. If sanctioned, the operation is rejected with clear error message and location info
-6. Special handling for Ukraine to check specific regions
-7. Fails securely - blocks operation if location cannot be determined
-
-## Control & Management
-
-### Easy Management with git-ip-control
-
-Git IP Guard v2.0 includes a comprehensive control utility:
-
-```bash
-# Check current status of all settings
-./scripts/git-ip-control status
-
-# Global controls
-./scripts/git-ip-control disable --global          # Disable all operations globally
-./scripts/git-ip-control enable --global           # Enable all operations globally
-./scripts/git-ip-control disable --global --push   # Disable push operations globally
-./scripts/git-ip-control disable --global --pull   # Disable pull operations globally
-
-# Repository-specific controls
-./scripts/git-ip-control disable --repo            # Disable all operations for current repo
-./scripts/git-ip-control enable --repo --push      # Enable push operations for current repo
-./scripts/git-ip-control disable --repo --pull     # Disable pull operations for current repo
-
-# Update existing installation
-./scripts/git-ip-control update
 ```
-
-## Disabling/Bypassing IP Checks
-
-There are several methods to disable or bypass the IP check mechanism:
-
-### 1. Temporary Bypass (Environment Variable)
-
-- Usage: `IPCHECK_BYPASS=1 git push origin main` or `IPCHECK_BYPASS=1 git pull origin main`
-- Scope: Single command only
-- Use case: Emergency operations, false positives
-
-### 2. Repository-Specific Controls
-
-```bash
-# Disable all operations for current repository
-git config ipcheck.disable true
-
-# Disable only push operations
-git config ipcheck.push.disable true
-
-# Disable only pull operations
-git config ipcheck.pull.disable true
-
-# Re-enable (remove disable setting)
-git config --unset ipcheck.disable
-git config --unset ipcheck.push.disable
-git config --unset ipcheck.pull.disable
-```
-
-### 3. Global Controls
-
-```bash
-# Disable all operations globally
-git config --global ipcheck.global.disable true
-
-# Disable only push operations globally
-git config --global ipcheck.push.disable true
-
-# Disable only pull operations globally
-git config --global ipcheck.pull.disable true
-
-# Re-enable (remove disable setting)
-git config --global --unset ipcheck.global.disable
-git config --global --unset ipcheck.push.disable
-git config --global --unset ipcheck.pull.disable
-```
-
-### 4. Complete Removal
-
-```bash
-chmod +x scripts/uninstall.sh
-./scripts/uninstall.sh
-```
-
-### Implementation Details
-
-Both hooks (`pre-push` and `pre-merge-commit`) include comprehensive bypass checks:
-
-```bash
-# Check for temporary bypass via environment variable
-if [ "$IPCHECK_BYPASS" = "1" ]; then
-  echo -e "${YELLOW}⚠️  IP check bypassed via IPCHECK_BYPASS environment variable${NC}"
-  exit 0
-fi
-
-# Check for global disable via git config
-if [ "$(git config --global --get ipcheck.global.disable)" = "true" ]; then
-  echo -e "${YELLOW}⚠️  IP check globally disabled${NC}"
-  exit 0
-fi
-
-# Check for operation-specific global disable
-if [ "$(git config --global --get ipcheck.push.disable)" = "true" ]; then
-  echo -e "${YELLOW}⚠️  IP check disabled globally for push operations${NC}"
-  exit 0
-fi
-
-# Check for repo-local disable via git config
-if [ "$(git config --get ipcheck.disable)" = "true" ]; then
-  echo -e "${YELLOW}⚠️  IP check disabled for this repository${NC}"
-  exit 0
-fi
-```
-
-### Testing Bypass Mechanisms
-
-The test suite includes comprehensive bypass testing:
-- `./test/test.sh bypass` - Tests all bypass mechanisms for push and pull
-- `./test/test.sh global` - Tests global enable/disable functionality
-- `./test/test.sh pull` - Tests pull-specific protection and bypasses
-
-The tests verify:
-- Environment variable bypass (IPCHECK_BYPASS=1)
-- Repository-specific disable for all operations, push-only, and pull-only
-- Global disable for all operations, push-only, and pull-only
-- Re-enabling checks at all levels
-- git-ip-control command functionality
-
-## Troubleshooting
-
-### Upgrading from v1.0
-
-If upgrading from Git IP Guard v1.0:
-
-1. Simply run `./scripts/install.sh` - it will detect and update automatically
-2. Your existing configuration will be preserved and migrated to v2.0 format
-3. Pull protection will be automatically enabled
-4. Use `./scripts/git-ip-control status` to see the new capabilities
-
-### "IP cache file not found" error
-
-If you see this error after updating Git IP Guard:
-
-- You have an outdated `git-ip-check` helper installed
-- Solution: Run `./scripts/git-ip-control update` or `./scripts/install.sh --install-helper`
-- Alternative: Remove it with `sudo rm /usr/local/bin/git-ip-check`
-
-### Connection or IP detection errors
-
-- Check your internet connection
-- Try the operation again (the hook includes automatic retry logic)
-- Use `IPCHECK_BYPASS=1 git push` or `IPCHECK_BYPASS=1 git pull` for temporary bypass
-
-### Hook not triggering
-
-- For new repos: Hooks are automatically installed via git templates
-- For existing repos: Run `git init` in the repository to apply the template
-- **Important**: All these files must be present in `.git/hooks/`:
-  - `pre-push` (push protection)
-  - `pre-merge-commit` (pull merge protection)
-  - `pre-rebase` (pull rebase protection)
-  - `post-merge` (fast-forward detection)
-  - `ip-check-config.json` (configuration)
-- If hooks are missing, use `./scripts/apply-to-existing-repos.sh --force`
-- For fast-forward pull protection: Run `./scripts/setup-fastforward-protection.sh`
-- Use `./scripts/git-ip-control status` to check installation status
-
-### False positives with VPN
-
-If you're using a VPN, the detected country will be the VPN server's location, not your actual location. You can use the temporary bypass method described above.
-
-## Security Considerations
-
-- This is a client-side check and can be bypassed by modifying the hook
-- For server-side enforcement, implement similar checks in your Git server
-- The hook uses ifconfig.co as primary service with automatic fallback to ipinfo.io
-- IP detection services have rate limits for free usage, but the helper includes retry logic
-- **Important**: The system fails securely - if IP location cannot be determined (e.g., due to service blocking certain countries), git operations are blocked for security reasons
-- The system shows country flags and location details for better user feedback
-
-## Contributing
-
-Pull requests are welcome! Please feel free to submit improvements.
-
-## Advanced Features
-
-### Comprehensive Pull Protection
-
-Git IP Guard v2.0 includes the most comprehensive pull protection available:
-
-#### Standard Hook Protection
-- `pre-merge-commit`: Protects pull operations that create merge commits
-- `pre-rebase`: Protects `git pull --rebase` operations
-- `post-merge`: Detects and warns about fast-forward pulls (post-operation)
-
-#### Fast-Forward Pull Protection
-Fast-forward pulls don't trigger standard Git hooks, so Git IP Guard includes a wrapper system:
-
-```bash
-# Setup comprehensive protection (optional but recommended)
-./scripts/setup-fastforward-protection.sh
-```
-
-This creates:
-1. **Git alias**: `git pull-guarded` for manual use
-2. **Shell wrapper**: Intercepts ALL `git pull` commands automatically
-3. **System-wide installation**: Works in any repository
-
-**Usage after setup**:
-```bash
-# All these are now protected:
-git pull                    # Intercepted by wrapper
-git pull origin main        # Intercepted by wrapper  
-git pull --rebase          # Wrapper + pre-rebase hook
-git pull-guarded           # Manual alias usage
-git-pull-original          # Bypass to original git pull
-```
-
-**Benefits**:
-- Protects fast-forward pulls that hooks cannot catch
-- Protects "already up to date" scenarios
-- Provides consistent user experience
-- Multiple layers of security
-
-### Rate Limit Handling
-
-The git-ip-check helper includes automatic fallback to alternative IP services:
-
-1. Primary: `ifconfig.co/json` (provides ISO country codes, more reliable)
-2. Fallback: `ipinfo.io/json` (automatic switch when primary is unavailable)
-3. Retry logic with delays
-4. Country flag display for visual feedback (🇳🇴, 🇺🇸, 🇬🇧, etc.)
-5. Handles both ISO codes and full country names
-
-This ensures the IP check continues working even during rate limiting.
-
-### Reusable Helper Scripts
-
-#### git-ip-check
-
-The `git-ip-check` script can be installed system-wide for use in multiple hooks:
-
-```bash
-# Install to /usr/local/bin (requires sudo)
-./scripts/install.sh --install-helper
-
-# Use in any git hook with operation type
-git-ip-check "/config/ip-check-config.json" push
-git-ip-check "/config/ip-check-config.json" pull
-
-# With custom bypass variables
-git-ip-check "/path/to/config.json" push IPCHECK_BYPASS ipcheck.disable
-```
-
-#### git-ip-info
-
-The `git-ip-info` command provides detailed information about your current IP location and Git configuration:
-
-```bash
-# Check your IP and Git info from anywhere
-git-ip-info
-```
-
-Features:
-
-- Displays current IP address with country flag
-- Shows Git user name and email configuration
-- Indicates if you're in a git repository with local overrides
-- Warns if your location is in the sanctioned list
-- Shows ISP/Organization and timezone information
-- Checks for active IP check bypasses
-
-#### git-ip-control
-
-The `git-ip-control` command provides comprehensive management of Git IP Guard:
-
-```bash
-# Install system-wide (optional)
-sudo cp scripts/git-ip-control /usr/local/bin/
-sudo chmod +x /usr/local/bin/git-ip-control
-
-# Check status from anywhere
-git-ip-control status
-
-# Manage settings easily
-git-ip-control disable --global --pull
-git-ip-control enable --repo --push
-git-ip-control update
-```
-
-Features:
-- Complete status overview of all settings
-- Global and repository-specific controls
-- Operation-specific management (push/pull)
-- Easy update mechanism
-- Installation status checking
-
-### Using in Other Hooks
-
-Example pre-commit hook:
-
-```bash
-#!/bin/bash
-git-ip-check "$(dirname "$0")/ip-check-config.json" \
-  "commit" \
-  "COMMIT_IPCHECK_BYPASS" \
-  "ipcheck.disable.commit"
-```
-
-This allows you to:
-
-- Use different bypass mechanisms for different hooks
-- Share the same IP checking logic across multiple git operations
-- Maintain consistent security policies
-
-### Bulk Apply to Existing Repositories
-
-The `apply-to-existing-repos.sh` script helps you apply Git IP Guard to multiple existing repositories:
-
-**Interactive mode** (recommended):
-
-```bash
-./apply-to-existing-repos.sh
-```
-
-This will prompt you to:
-
-1. Search common development directories
-2. Search from current directory
-3. Specify a custom directory
-
-**Command line mode**:
-
-```bash
-# Apply to specific directories
-./apply-to-existing-repos.sh ~/Projects ~/Work
-
-# Apply to all repos under current directory
-./apply-to-existing-repos.sh .
-```
-
-**Force update mode** (skip confirmation prompts):
-
-```bash
-# Force update in interactive mode
-./apply-to-existing-repos.sh --force
-
-# Force update specific directories
-./apply-to-existing-repos.sh -f ~/Projects ~/Work
-```
-
-The script:
-
-- Finds all Git repositories in specified directories
-- Asks before overwriting existing hooks (unless `--force` is used)
-- Uses `git init` to properly apply the template
-- Shows progress and summary
-- Supports `--help` flag for usage information
-
-## Future Improvements
-
-### Country List Management
-
-The allowed/blocked country lists can be managed via:
-
-1. Direct editing of `ip-check-config.json`
-
-### Integration with CI/CD
-
-The git-ip-check helper can be integrated into CI/CD pipelines:
-
-```bash
-# In your CI script
-if git-ip-check "/path/to/ci-config.json"; then
-    echo "Location check passed"
-else
-    echo "Build blocked due to location restrictions"
-    exit 1
-fi
+config/                       Default config shipped to ~/.git-templates
+hooks/
+  pre-push                    Blocks push
+  pre-merge-commit            Blocks merge-style pull
+  pre-rebase                  Blocks rebase-style pull
+  post-merge                  Warns after fast-forward pull
+scripts/
+  git-ip-check                Core check, used by every hook
+  git-ip-info                 Status command
+  git-ip-control              Enable/disable management
+  git-pull-wrapper            Used by fast-forward protection setup
+  install.sh                  Installer (also handles updates)
+  apply-to-existing-repos.sh  Bulk-apply to existing repos
+  setup-fastforward-protection.sh
+  uninstall.sh
+  lib/
+    ip-common.sh              Shared library: providers, cache, flags, names
 ```
 
 ## License
 
-MIT License - feel free to use this in your projects!
+[MIT](LICENSE)

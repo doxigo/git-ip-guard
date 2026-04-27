@@ -1,207 +1,160 @@
 #!/bin/bash
 
-# Colors for output
+# Git IP Guard installer.
+# Sets up hooks in ~/.git-templates so they're applied to new repos.
+# Use scripts/apply-to-existing-repos.sh to retrofit existing repos.
+
+set -u
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
+
+INSTALL_HELPER=false
+for arg in "$@"; do
+    case $arg in
+        --install-helper) INSTALL_HELPER=true ;;
+        --help|-h)
+            cat <<USAGE
+Usage: $0 [options]
+  --install-helper    Also install git-ip-check, git-ip-info, git-ip-control,
+                      and the ip-common.sh library to /usr/local (requires sudo).
+  --help, -h          Show this help message.
+USAGE
+            exit 0
+            ;;
+    esac
+done
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}      Git IP Guard Installation         ${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
-# Parse command line arguments
-INSTALL_HELPER=false
-
-for arg in "$@"; do
-    case $arg in
-        --install-helper)
-            INSTALL_HELPER=true
-            shift
-            ;;
-        --help|-h)
-            echo "Usage: $0 [options]"
-            echo ""
-            echo "Options:"
-            echo "  --install-helper    Also install git-ip-check helper to /usr/local/bin (requires sudo)"
-            echo "  --help, -h         Show this help message"
-            echo ""
-            echo "Examples:"
-            echo "  $0                     # Basic installation"
-            echo "  $0 --install-helper    # Install with system-wide helper"
-            exit 0
-            ;;
-    esac
-done
-
-# Install helper if requested
-if [ "$INSTALL_HELPER" = true ]; then
-    echo -e "${YELLOW}Installing git-ip-check helper...${NC}"
-    
-    # Check if git-ip-check exists
-    if [ ! -f "scripts/git-ip-check" ]; then
-        echo -e "${RED}Error: git-ip-check not found in scripts directory${NC}"
+# Hard requirements.
+for dep in jq curl git; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+        echo -e "${RED}Error: '$dep' is required but not installed.${NC}"
+        case "$dep" in
+            jq) echo "  macOS: brew install jq    Debian/Ubuntu: sudo apt-get install jq" ;;
+            curl) echo "  macOS: brew install curl  Debian/Ubuntu: sudo apt-get install curl" ;;
+        esac
         exit 1
     fi
-    
-    # Check for sudo privileges
-    if [ "$EUID" -ne 0 ]; then
-        echo -e "${YELLOW}sudo privileges required to install helper to /usr/local/bin${NC}"
-        sudo cp scripts/git-ip-check /usr/local/bin/
-        sudo chmod +x /usr/local/bin/git-ip-check
-    else
-        cp scripts/git-ip-check /usr/local/bin/
-        chmod +x /usr/local/bin/git-ip-check
-    fi
-    
-    if [ -x "/usr/local/bin/git-ip-check" ]; then
-        echo -e "${GREEN}✅ Helper installed to /usr/local/bin/git-ip-check${NC}"
-    else
-        echo -e "${RED}Failed to install helper${NC}"
-    fi
-    echo ""
-fi
+done
 
-# Define directories
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
 TEMPLATE_DIR="$HOME/.git-templates"
 HOOKS_DIR="$TEMPLATE_DIR/hooks"
 
-# Check for existing installation and backup config
+# System-wide install of helpers (optional).
+if [ "$INSTALL_HELPER" = true ]; then
+    echo -e "${YELLOW}Installing helpers system-wide...${NC}"
+    SUDO=""
+    [ "$EUID" -ne 0 ] && SUDO="sudo"
+
+    $SUDO mkdir -p /usr/local/bin /usr/local/lib/git-ip-guard
+    $SUDO cp "$PROJECT_DIR/scripts/lib/ip-common.sh" /usr/local/lib/git-ip-guard/ip-common.sh
+    $SUDO chmod 644 /usr/local/lib/git-ip-guard/ip-common.sh
+    for tool in git-ip-check git-ip-info git-ip-control; do
+        if [ -f "$PROJECT_DIR/scripts/$tool" ]; then
+            $SUDO cp "$PROJECT_DIR/scripts/$tool" /usr/local/bin/
+            $SUDO chmod +x "/usr/local/bin/$tool"
+            echo -e "${GREEN}✅ Installed /usr/local/bin/$tool${NC}"
+        fi
+    done
+    echo ""
+fi
+
+# Back up an existing config if one exists.
 UPDATE_MODE=false
+BACKUP_TMP=""
 if [ -d "$TEMPLATE_DIR" ]; then
     UPDATE_MODE=true
     echo -e "${YELLOW}Existing Git IP Guard installation detected${NC}"
-    
-    # Backup existing config if it exists
     if [ -f "$HOOKS_DIR/ip-check-config.json" ]; then
-        cp "$HOOKS_DIR/ip-check-config.json" "/tmp/ip-check-config-backup.json"
+        BACKUP_TMP=$(mktemp -t git-ip-guard-config.XXXXXX)
+        cp "$HOOKS_DIR/ip-check-config.json" "$BACKUP_TMP"
         echo -e "${BLUE}Backed up existing configuration${NC}"
     fi
 fi
 
-# Clean existing setup
-rm -rf $TEMPLATE_DIR
+# Reset the template dir cleanly.
+rm -rf "$TEMPLATE_DIR"
+mkdir -p "$HOOKS_DIR"
 
-# Create directories
-mkdir -p $HOOKS_DIR
-
-# Copy hooks and configuration files
+# Install hooks.
 echo -e "${BLUE}Installing Git IP Guard hooks...${NC}"
-
-# Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-# Copy pre-push hook
-if [ -f "$PROJECT_DIR/hooks/pre-push" ]; then
-    cp "$PROJECT_DIR/hooks/pre-push" "$HOOKS_DIR/pre-push"
-    chmod +x "$HOOKS_DIR/pre-push"
-    echo -e "${GREEN}✅ Installed pre-push hook${NC}"
-else
-    echo -e "${RED}Error: pre-push hook not found at $PROJECT_DIR/hooks/pre-push${NC}"
-    exit 1
-fi
-
-# Copy pre-merge-commit hook for pull protection
-if [ -f "$PROJECT_DIR/hooks/pre-merge-commit" ]; then
-    cp "$PROJECT_DIR/hooks/pre-merge-commit" "$HOOKS_DIR/pre-merge-commit"
-    chmod +x "$HOOKS_DIR/pre-merge-commit"
-    echo -e "${GREEN}✅ Installed pre-merge-commit hook (pull protection)${NC}"
-else
-    echo -e "${YELLOW}Warning: pre-merge-commit hook not found, pull protection not available${NC}"
-fi
-
-# Copy pre-rebase hook for pull --rebase protection
-if [ -f "$PROJECT_DIR/hooks/pre-rebase" ]; then
-    cp "$PROJECT_DIR/hooks/pre-rebase" "$HOOKS_DIR/pre-rebase"
-    chmod +x "$HOOKS_DIR/pre-rebase"
-    echo -e "${GREEN}✅ Installed pre-rebase hook (rebase protection)${NC}"
-else
-    echo -e "${YELLOW}Warning: pre-rebase hook not found, rebase protection not available${NC}"
-fi
-
-# Copy post-merge hook for fast-forward pull detection
-if [ -f "$PROJECT_DIR/hooks/post-merge" ]; then
-    cp "$PROJECT_DIR/hooks/post-merge" "$HOOKS_DIR/post-merge"
-    chmod +x "$HOOKS_DIR/post-merge"
-    echo -e "${GREEN}✅ Installed post-merge hook (fast-forward detection)${NC}"
-else
-    echo -e "${YELLOW}Warning: post-merge hook not found, fast-forward detection not available${NC}"
-fi
-
-# Handle configuration file
-if [ "$UPDATE_MODE" = "true" ] && [ -f "/tmp/ip-check-config-backup.json" ]; then
-    # Check if backup config needs migration
-    BACKUP_VERSION=$(cat "/tmp/ip-check-config-backup.json" | jq -r '.version // "1.0"' 2>/dev/null)
-    if [ "$BACKUP_VERSION" = "1.0" ] || [ "$BACKUP_VERSION" = "null" ]; then
-        echo -e "${YELLOW}Migrating configuration from v1.0 to v2.0...${NC}"
-        # Create new config with old blocked countries but new structure
-        OLD_BLOCKED=$(cat "/tmp/ip-check-config-backup.json" | jq -r '.blocked_countries[]' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-        if [ -n "$OLD_BLOCKED" ]; then
-            cat "$PROJECT_DIR/config/ip-check-config.json" | jq --arg blocked "$OLD_BLOCKED" '.blocked_countries = ($blocked | split(","))' > "$HOOKS_DIR/ip-check-config.json"
-        else
-            cp "$PROJECT_DIR/config/ip-check-config.json" "$HOOKS_DIR/ip-check-config.json"
-        fi
-        echo -e "${GREEN}✅ Configuration migrated to v2.0${NC}"
+declare -a HOOKS=(pre-push pre-merge-commit pre-rebase post-merge)
+for hook in "${HOOKS[@]}"; do
+    src="$PROJECT_DIR/hooks/$hook"
+    if [ -f "$src" ]; then
+        cp "$src" "$HOOKS_DIR/$hook"
+        chmod +x "$HOOKS_DIR/$hook"
+        echo -e "${GREEN}✅ Installed $hook hook${NC}"
     else
-        # Use backup as-is
-        cp "/tmp/ip-check-config-backup.json" "$HOOKS_DIR/ip-check-config.json"
-        echo -e "${GREEN}✅ Restored existing configuration${NC}"
+        echo -e "${YELLOW}Warning: $hook not found in $src${NC}"
     fi
-    rm "/tmp/ip-check-config-backup.json"
+done
+
+# Install the shared library + helpers locally so hooks can find them.
+cp "$PROJECT_DIR/scripts/lib/ip-common.sh" "$HOOKS_DIR/ip-common.sh"
+chmod 644 "$HOOKS_DIR/ip-common.sh"
+echo -e "${GREEN}✅ Installed ip-common.sh helper library${NC}"
+
+for tool in git-ip-check git-ip-info; do
+    if [ -f "$PROJECT_DIR/scripts/$tool" ]; then
+        cp "$PROJECT_DIR/scripts/$tool" "$HOOKS_DIR/$tool"
+        chmod +x "$HOOKS_DIR/$tool"
+    fi
+done
+echo -e "${GREEN}✅ Installed git-ip-check helper${NC}"
+
+# Configuration handling: migrate older configs forward, otherwise install default.
+DEFAULT_CONFIG="$PROJECT_DIR/config/ip-check-config.json"
+if [ "$UPDATE_MODE" = "true" ] && [ -n "$BACKUP_TMP" ] && [ -s "$BACKUP_TMP" ]; then
+    if jq -e . "$BACKUP_TMP" >/dev/null 2>&1; then
+        BACKUP_VERSION=$(jq -r '.version // "1.0"' "$BACKUP_TMP")
+        # Always merge the existing config on top of the latest defaults so new
+        # fields (mode, region rules, version) appear automatically.
+        jq -s '.[0] * .[1] | .version = "2.1"' "$DEFAULT_CONFIG" "$BACKUP_TMP" \
+            > "$HOOKS_DIR/ip-check-config.json"
+        echo -e "${GREEN}✅ Migrated configuration from v$BACKUP_VERSION to v2.1${NC}"
+    else
+        echo -e "${YELLOW}Existing configuration was invalid JSON; replacing with default.${NC}"
+        cp "$DEFAULT_CONFIG" "$HOOKS_DIR/ip-check-config.json"
+    fi
+    rm -f "$BACKUP_TMP"
 else
-    # Fresh installation - copy default config
-    cp "$PROJECT_DIR/config/ip-check-config.json" "$HOOKS_DIR/ip-check-config.json"
+    cp "$DEFAULT_CONFIG" "$HOOKS_DIR/ip-check-config.json"
     echo -e "${GREEN}✅ Installed default configuration${NC}"
 fi
 
-# Copy helper script if available
-if [ -f "$PROJECT_DIR/scripts/git-ip-check" ]; then
-    cp "$PROJECT_DIR/scripts/git-ip-check" "$HOOKS_DIR/git-ip-check"
-    chmod +x "$HOOKS_DIR/git-ip-check"
-    echo -e "${GREEN}✅ Installed git-ip-check helper${NC}"
-fi
+# Wire the template into git.
+git config --global init.templateDir "$TEMPLATE_DIR"
 
-# Set the template directory
-git config --global init.templateDir $TEMPLATE_DIR
-
-echo -e "${GREEN}✅ Git IP Guard v2.0 installation complete!${NC}"
+echo ""
+echo -e "${GREEN}✅ Git IP Guard v2.1 installation complete${NC}"
 echo ""
 if [ "$UPDATE_MODE" = "true" ]; then
-    echo -e "${BLUE}Updated from previous version:${NC}"
+    echo -e "${BLUE}Updated from previous version. New repositories will pick up the hooks automatically.${NC}"
 else
-    echo -e "${BLUE}What's been installed:${NC}"
+    echo -e "${BLUE}New repositories will pick up the hooks automatically.${NC}"
 fi
-echo "  • Pre-push hook (blocks sanctioned countries on push)"
-echo "  • Pre-merge-commit hook (blocks sanctioned countries on pull merge)"
-echo "  • Pre-rebase hook (blocks sanctioned countries on pull rebase)"
-echo "  • Post-merge hook (detects fast-forward pulls)"
-echo "  • Enhanced configuration with pull/push controls"
-echo "  • Global git template directory configured"
-
-if [ -x "/usr/local/bin/git-ip-check" ]; then
-    echo "  • System-wide git-ip-check helper available"
-elif [ -f "$HOOKS_DIR/git-ip-check" ]; then
-    echo "  • Local git-ip-check helper installed"
-fi
-
-echo ""
-echo -e "${YELLOW}New in v2.0:${NC}"
-echo "  • Pull protection (git pull/fetch with merge)"
-echo "  • Global and operation-specific disable options"
-echo "  • Seamless updates with config preservation"
-echo ""
-echo "All new repositories will automatically use this template."
-echo ""
 echo "For existing repositories, run:"
-echo -e "  ${BLUE}git init${NC}  (inside the repository)"
-echo -e "  ${BLUE}./scripts/apply-to-existing-repos.sh${NC}  (bulk update)"
+echo -e "  ${BLUE}./scripts/apply-to-existing-repos.sh${NC}"
 echo ""
 echo -e "${BLUE}Bypass options:${NC}"
-echo "  Temporary bypass: ${BLUE}IPCHECK_BYPASS=1 git push${NC}"
-echo "  Repo disable: ${BLUE}git config ipcheck.disable true${NC}"
-echo "  Global disable: ${BLUE}git config --global ipcheck.global.disable true${NC}"
-echo "  Disable pulls only: ${BLUE}git config --global ipcheck.pull.disable true${NC}"
-echo "  Disable pushes only: ${BLUE}git config --global ipcheck.push.disable true${NC}"
+echo -e "  Single command:    ${BLUE}IPCHECK_BYPASS=1 git push${NC}"
+echo -e "  This repository:   ${BLUE}git config ipcheck.disable true${NC}"
+echo -e "  Globally:          ${BLUE}git config --global ipcheck.global.disable true${NC}"
+echo -e "  Pulls only:        ${BLUE}git config --global ipcheck.pull.disable true${NC}"
+echo -e "  Pushes only:       ${BLUE}git config --global ipcheck.push.disable true${NC}"
+echo ""
+echo -e "${YELLOW}Note:${NC} this is a developer-side reminder, not a security control."
+echo "      It can be bypassed with --no-verify or by editing local hooks."
+echo "      For real enforcement, add server-side checks (CI, branch protection, server hooks)."
