@@ -30,7 +30,7 @@ If you want nothing to leave the machine from the wrong place, git or otherwise,
 ## Features
 
 - **Multi-provider IP geolocation** with automatic fallback: ipinfo.io → ipwho.is → api.country.is → freeipapi.com. A provider's answer must be JSON with an IP and a two-letter country, so a bot-challenge page or an error body is never read as a location.
-- **Route-aware cache**: one lookup serves git operations for 5 minutes, but only while traffic leaves the same way. A VPN going up or down changes the route, which drops the cache at once.
+- **Route-aware cache**: one lookup serves git operations for 5 minutes, but only while traffic leaves the same way. A VPN app that adds routes changes the route when it connects or drops, which drops the cache at once.
 - **Fails closed**: if no provider can verify your location, the operation is blocked with a clear message and a bypass hint.
 - **Allowlist, blocklist, or both**, plus **region rules** for places an ISO country code can't express (Crimea, Donetsk and Luhansk under UA).
 - **Granular bypass**: env var, repo-level or global git config, per operation (push/pull) or all.
@@ -222,7 +222,9 @@ Your config still decides. The blocklist, allowlist and region rules apply to Wh
 
 ## Caching
 
-Successful lookups are cached at `~/.cache/git-ip-guard/last.json` (readable only by you) for 5 minutes, together with the route traffic takes out. When the route changes, for example a VPN connecting or dropping, the next git operation looks up the location again.
+Successful lookups are cached at `~/.cache/git-ip-guard/last.json` (readable only by you) for 5 minutes, together with the route traffic takes out. When the route changes, for example a VPN app connecting or dropping, the next git operation looks up the location again.
+
+A VPN that runs on your router, or one that doesn't add routes on the Mac, leaves the route unchanged, so only the 5 minutes apply. Check with `route -n get 1.1.1.1` with the VPN on and off: if `interface:` is the same both times, lower the TTL.
 
 ```bash
 export GIT_IP_GUARD_CACHE_TTL=900    # 15 min
@@ -236,7 +238,7 @@ IPCHECK_NO_CACHE=1 git push          # one-off bypass
 - **Local merges and rebases are never checked.** v2 did a lookup for every local `git rebase` and `git merge`, and blocked them when offline.
 - **Uses Whereabouts' location** when it's running, instead of a lookup of its own.
 - **One central install and config** instead of a copy of the checker, library and config in every repo. Changing the config takes effect everywhere.
-- **The cache follows the network.** v2 trusted a cached location for 5 minutes, even after the VPN dropped.
+- **The cache follows the network.** v2 trusted a cached location for 5 minutes, even after a VPN app dropped.
 - **Fixed**: `enable_push_check`/`enable_pull_check: false` was ignored; on macOS's bash 3.2 every "blocked" message crashed with `bad substitution`; `post-merge` suggested `git reset --hard HEAD~1`, which can lose work and undoes only one commit; freeipapi.com had moved, so the last fallback never answered.
 - **Safer installs**: the installer no longer deletes `~/.git-templates`, no longer needs sudo, and never overwrites another tool's hooks.
 - **Provider text is sanitized** before it reaches the terminal, so a provider can't inject escape sequences.

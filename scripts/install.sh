@@ -112,9 +112,12 @@ if [ "$INSTALL_HELPER" = true ]; then
     for tool in git-ip-check git-ip-info git-ip-control; do
         $SUDO ln -sf "$HOME_DIR/$tool" "/usr/local/bin/$tool"
     done
-    # v2 copied the library here.
-    $SUDO rm -rf /usr/local/lib/git-ip-guard
     echo "${GREEN}✅ Linked git-ip-check, git-ip-info and git-ip-control into /usr/local/bin${NC}"
+    # v2 copied the library here, as root. Nothing reads it any more.
+    if [ -d /usr/local/lib/git-ip-guard ] && ! rm -rf /usr/local/lib/git-ip-guard 2>/dev/null; then
+        echo "${YELLOW}v2's library is still in /usr/local/lib/git-ip-guard. Nothing uses it; remove it with:${NC}"
+        echo "  sudo rm -rf /usr/local/lib/git-ip-guard"
+    fi
 fi
 
 # 6. Leftovers from v2's optional pull-protection scripts.
