@@ -56,7 +56,7 @@ echo ""
 echo -e "${BLUE}${BOLD}IP & Location Information:${NC}"
 echo "$rule"
 
-if ! IP_INFO=$(get_ip_info); then
+if ! IP_INFO=$(get_ip_info "$GIT_IP_GUARD_CONFIG"); then
     echo -e "${RED}  ❌ Could not fetch IP information from any provider.${NC}"
     echo -e "${YELLOW}  Run with --verbose to see provider attempts:${NC}"
     echo -e "      git-ip-info --verbose --no-cache"

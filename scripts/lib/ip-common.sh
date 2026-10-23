@@ -17,7 +17,6 @@
 GIT_IP_GUARD_HOME="$HOME/.local/share/git-ip-guard"
 GIT_IP_GUARD_CONFIG="$HOME/.config/git-ip-guard/config.json"
 GIT_IP_GUARD_CACHE_DIR="${GIT_IP_GUARD_CACHE_DIR:-$HOME/.cache/git-ip-guard}"
-GIT_IP_GUARD_CACHE_TTL="${GIT_IP_GUARD_CACHE_TTL:-300}"
 GIT_IP_GUARD_VERBOSE="${GIT_IP_GUARD_VERBOSE:-0}"
 
 # Expand a leading ~ without using eval.
@@ -82,15 +81,15 @@ route_fingerprint() {
 WHEREABOUTS_STATUS="$HOME/Library/Application Support/Whereabouts/status.json"
 
 # Prints the location from Whereabouts' status file, normalized like a provider's answer,
-# when the app is running and its last check is under 3 minutes old and found a country.
-# Whereabouts writes "checking" the moment the network changes, so a dropped VPN can't
-# leave an old answer here; anything else falls back to our own lookup.
+# when the app is running and its last check is under $1 seconds old and found a country.
+# Whereabouts writes "checking" the moment the Mac sees the network change; anything else
+# falls back to our own lookup.
 whereabouts_ip_info() {
     [ -r "$WHEREABOUTS_STATUS" ] || return 1
     local pid info
-    { read -r pid; IFS= read -r info; } < <(jq -r --argjson now "$(date +%s)" '
+    { read -r pid; IFS= read -r info; } < <(jq -r --argjson now "$(date +%s)" --argjson max "$1" '
         select((.kind == "safe" or .kind == "violation") and ((.countryCode // "") | test("^[A-Z]{2}$")))
-        | select(($now - .checkedAt) as $age | $age >= 0 and $age < 180)
+        | select(($now - .checkedAt) as $age | $age >= 0 and $age < $max)
         | .pid,
           ({ ip: (.ip // ""), country: .countryCode, country_name: (.country // ""), city: (.city // ""),
              region: (.region // ""), org: (.isp // ""), timezone: "", provider: "Whereabouts" }
@@ -102,25 +101,30 @@ whereabouts_ip_info() {
     printf '%s' "$info"
 }
 
-# Public: fetch IP info: from Whereabouts when it has a fresh answer, otherwise from the
-# providers in turn, with an on-disk cache. The cache lives GIT_IP_GUARD_CACHE_TTL seconds
-# (default 300; 0 disables it) and only while the route out is unchanged.
-# IPCHECK_NO_CACHE=1 skips both Whereabouts and the cache for one call.
+# Public: fetch IP info: from Whereabouts or the on-disk cache when they have a recent
+# answer, otherwise from the providers in turn. "Recent" is cache_ttl seconds from the
+# config file in $1 (default 300; 0 always looks again), and the cache also needs the
+# route out to be unchanged. GIT_IP_GUARD_CACHE_TTL overrides the config, so a one-off
+# run or a test can change it. IPCHECK_NO_CACHE=1 skips Whereabouts and the cache.
 get_ip_info() {
-    local cache_file="$GIT_IP_GUARD_CACHE_DIR/last.json"
-    local now route
-    [ "${IPCHECK_NO_CACHE:-0}" != "1" ] && whereabouts_ip_info && return 0
+    local config="${1:-}" cache_file="$GIT_IP_GUARD_CACHE_DIR/last.json"
+    local now route ttl reuse=0
+    ttl="${GIT_IP_GUARD_CACHE_TTL:-}"
+    [ -z "$ttl" ] && [ -r "$config" ] && ttl=$(jq -r '.cache_ttl // empty' "$config" 2>/dev/null)
+    ttl="${ttl:-300}"
+    [ "${IPCHECK_NO_CACHE:-0}" != "1" ] && [ "$ttl" -gt 0 ] 2>/dev/null && reuse=1
+
+    [ "$reuse" = 1 ] && whereabouts_ip_info "$ttl" && return 0
 
     now=$(date +%s)
     route=$(route_fingerprint)
 
     # Line 1: "<epoch> <route>", line 2: the normalized JSON.
-    if [ "${IPCHECK_NO_CACHE:-0}" != "1" ] && [ "$GIT_IP_GUARD_CACHE_TTL" -gt 0 ] 2>/dev/null \
-       && [ -r "$cache_file" ]; then
+    if [ "$reuse" = 1 ] && [ -r "$cache_file" ]; then
         local cached_at cached_route cached
         { read -r cached_at cached_route; IFS= read -r cached; } < "$cache_file"
         case "$cached_at" in ''|*[!0-9]*) cached_at=0 ;; esac
-        if [ $((now - cached_at)) -lt "$GIT_IP_GUARD_CACHE_TTL" ] && [ "$cached_route" = "$route" ] \
+        if [ $((now - cached_at)) -lt "$ttl" ] && [ "$cached_route" = "$route" ] \
            && [ -n "$cached" ]; then
             log_verbose "using cached IP info (age $((now - cached_at))s)"
             printf '%s' "$cached"

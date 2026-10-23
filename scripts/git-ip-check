@@ -55,7 +55,7 @@ if [ "$enabled" = "false" ]; then
     exit 0
 fi
 
-if ! ip_info=$(get_ip_info); then
+if ! ip_info=$(get_ip_info "$config"); then
     echo -e "${RED}Error: Could not detect IP information from any provider.${NC}"
     echo -e "${RED}Operation blocked because location is unverifiable.${NC}"
     echo -e "${YELLOW}Set GIT_IP_GUARD_VERBOSE=1 to see provider errors,${NC}"

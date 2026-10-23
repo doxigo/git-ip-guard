@@ -76,6 +76,10 @@ printf '%s some-other-route\n{"ip":"203.0.113.7","country":"IR"}\n' "$(date +%s)
 mock NO;  expect pass  "a cache from another route is ignored"      "$CHECK" "$CFG" push
 mock IR;  expect pass  "same route within the TTL uses the cache"   "$CHECK" "$CFG" push
 expect block "IPCHECK_NO_CACHE=1 looks again"                       env IPCHECK_NO_CACHE=1 "$CHECK" "$CFG" push
+# The cache now says IR for this route. Without the env var, the config's cache_ttl decides.
+mock NO
+expect block "config cache_ttl keeps a cached answer"   env -u GIT_IP_GUARD_CACHE_TTL "$CHECK" "$(config '.cache_ttl = 600')" push
+expect pass  "config cache_ttl: 0 always looks again"   env -u GIT_IP_GUARD_CACHE_TTL "$CHECK" "$(config '.cache_ttl = 0')" push
 export GIT_IP_GUARD_CACHE_TTL=0
 
 echo "== whereabouts"
@@ -89,12 +93,16 @@ status() {
         "$(( $(date +%s) - $3 ))" "$2" "$1" > "$W/status.json"
 }
 mock NO
+export GIT_IP_GUARD_CACHE_TTL=300
 status $$ safe 5;               expect block "uses a running Whereabouts' location"   "$CHECK" "$CFG" push
+status $$ safe 90;              expect pass  "cache_ttl also limits Whereabouts' age" env GIT_IP_GUARD_CACHE_TTL=60 "$CHECK" "$CFG" push
+status $$ safe 5;               expect pass  "cache_ttl 0 skips Whereabouts"         env GIT_IP_GUARD_CACHE_TTL=0 "$CHECK" "$CFG" push
 status $$ checking 5;           expect pass  "'checking' falls back to a lookup"      "$CHECK" "$CFG" push
 status $$ safe 600;             expect pass  "an old check falls back to a lookup"    "$CHECK" "$CFG" push
 status "$dead_pid" safe 5;      expect pass  "a crashed app's file is ignored"        "$CHECK" "$CFG" push
 status $$ safe 5;               expect pass  "IPCHECK_NO_CACHE=1 skips Whereabouts"   env IPCHECK_NO_CACHE=1 "$CHECK" "$CFG" push
 rm -rf "$HOME/Library"
+export GIT_IP_GUARD_CACHE_TTL=0
 
 echo "== install"
 # Whatever ssh command was configured before must keep running after the check.

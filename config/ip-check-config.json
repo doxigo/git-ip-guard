@@ -8,6 +8,7 @@
   },
   "enable_push_check": true,
   "enable_pull_check": true,
+  "cache_ttl": 300,
   "log_file": "~/.git_ip_error.log",
   "description": "Git IP Guard: blocklist mode with the US OFAC comprehensively sanctioned countries. Set 'mode' to 'allowlist' or 'both' to enforce allowed_countries."
 }

@@ -164,6 +164,7 @@ git-ip-control enable  --repo --push     # enable only pushes in this repo
   },
   "enable_push_check": true,
   "enable_pull_check": true,
+  "cache_ttl": 300,
   "log_file": "~/.git_ip_error.log"
 }
 ```
@@ -175,6 +176,7 @@ git-ip-control enable  --repo --push     # enable only pushes in this repo
 | `allowed_countries` | Codes that are permitted. **Only enforced when `mode` is `allowlist` or `both`**, and only once the list has at least one entry. |
 | `blocked_regions` | Per-country list of region/city substrings to block (case-insensitive). |
 | `enable_push_check` / `enable_pull_check` | `false` turns off that whole operation type. |
+| `cache_ttl` | Seconds a location answer is reused, from the cache or from Whereabouts. Default `300`; `0` looks it up for every git operation. See [Caching](#caching). |
 | `log_file` | Where blocks are logged. `~` is expanded without `eval`. |
 
 ## Bypass options
@@ -216,20 +218,19 @@ export GIT_IP_GUARD_PROVIDERS="ipwho.is|https://ipwho.is/ ipinfo.io|https://ipin
 
 ## With Whereabouts
 
-[Whereabouts](https://github.com/doxigo/whereabouts), a macOS menu-bar app, checks your location on an interval. Versions that publish `~/Library/Application Support/Whereabouts/status.json` write each result there. While Whereabouts is running and its last check is under 3 minutes old, git-ip-guard takes the location from that file instead of asking a provider. Git operations then need no lookup of their own, and git agrees with the menu bar on where you are. `git-ip-info` shows `Source: Whereabouts` when this happens.
+[Whereabouts](https://github.com/doxigo/whereabouts), a macOS menu-bar app, checks your location on an interval. Versions that publish `~/Library/Application Support/Whereabouts/status.json` write each result there. While Whereabouts is running and its last check is newer than `cache_ttl`, git-ip-guard takes the location from that file instead of asking a provider. Git operations then need no lookup of their own, and git agrees with the menu bar on where you are. `git-ip-info` shows `Source: Whereabouts` when this happens.
 
-Your config still decides. The blocklist, allowlist and region rules apply to Whereabouts' location the same way they apply to a provider's, and Whereabouts' own verdict isn't used. When the network changes, Whereabouts marks the file `checking` until its next check finishes. If Whereabouts isn't running, or the file is older than 3 minutes or has no location, git-ip-guard does its own lookup as usual. `IPCHECK_NO_CACHE=1` skips Whereabouts too.
+Your config still decides. The blocklist, allowlist and region rules apply to Whereabouts' location the same way they apply to a provider's, and Whereabouts' own verdict isn't used. When the network changes, Whereabouts marks the file `checking` until its next check finishes. If Whereabouts isn't running, or the file is older than `cache_ttl` or has no location, git-ip-guard does its own lookup as usual. `IPCHECK_NO_CACHE=1` skips Whereabouts too.
 
 ## Caching
 
-Successful lookups are cached at `~/.cache/git-ip-guard/last.json` (readable only by you) for 5 minutes, together with the route traffic takes out. When the route changes, for example a VPN app connecting or dropping, the next git operation looks up the location again.
+Successful lookups are cached at `~/.cache/git-ip-guard/last.json` (readable only by you) for `cache_ttl` seconds (5 minutes by default), together with the route traffic takes out. When the route changes, for example a VPN app connecting or dropping, the next git operation looks up the location again.
 
-A VPN that runs on your router, or one that doesn't add routes on the Mac, leaves the route unchanged, so only the 5 minutes apply. Check with `route -n get 1.1.1.1` with the VPN on and off: if `interface:` is the same both times, lower the TTL.
+A VPN that runs on your router, or one that doesn't add routes on the Mac, leaves the route unchanged, so only `cache_ttl` applies. Check with `route -n get 1.1.1.1` with the VPN on and off: if `interface:` is the same both times, lower `cache_ttl` in the config, for example to `60`.
 
 ```bash
-export GIT_IP_GUARD_CACHE_TTL=900    # 15 min
-export GIT_IP_GUARD_CACHE_TTL=0      # disable caching entirely
-IPCHECK_NO_CACHE=1 git push          # one-off bypass
+GIT_IP_GUARD_CACHE_TTL=0 git push    # overrides cache_ttl for one command
+IPCHECK_NO_CACHE=1 git push          # skip the cache and Whereabouts once
 ```
 
 ## What changed in 3.0
