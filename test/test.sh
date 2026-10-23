@@ -1,364 +1,158 @@
 #!/bin/bash
 
-# Colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Offline test suite. Providers are mocked with file:// URLs, $HOME is a throwaway
+# directory, and a stand-in ssh runs the remote side locally, so nothing here touches
+# the network or your real git config.
+#   ./test/test.sh
 
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}       Git IP Guard Test Suite          ${NC}"
-echo -e "${BLUE}========================================${NC}"
-echo ""
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+T="$(mktemp -d)"
+T="$(cd "$T" && pwd -P)"
+trap 'rm -rf "$T"' EXIT
 
-# Function to display test results
-show_result() {
-    if [ $1 -eq 0 ]; then
-        echo -e "${GREEN}✅ PASS${NC}: $2"
+export HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 GIT_IP_GUARD_CACHE_TTL=0
+unset GIT_CONFIG_GLOBAL GIT_SSH_COMMAND GIT_SSH IPCHECK_BYPASS IPCHECK_NO_CACHE GIT_IP_GUARD_CACHE_DIR
+mkdir -p "$HOME"
+git config --global user.name test
+git config --global user.email test@example.com
+git config --global init.defaultBranch main
+
+CHECK="$ROOT/scripts/git-ip-check"
+CFG="$ROOT/config/ip-check-config.json"
+failures=0
+
+# mock <country> [region]: every provider lookup now answers with this location.
+mock() {
+    printf '{"ip":"203.0.113.7","country":"%s","region":"%s","city":"Testville"}' "$1" "${2:-}" > "$T/geo.json"
+    export GIT_IP_GUARD_PROVIDERS="mock|file://$T/geo.json"
+}
+
+# expect <pass|block> <description> <command...>
+expect() {
+    local want="$1" desc="$2" got
+    shift 2
+    if "$@" > "$T/out" 2>&1; then got=pass; else got=block; fi
+    if [ "$got" = "$want" ]; then
+        echo "ok    $desc"
     else
-        echo -e "${RED}❌ FAIL${NC}: $2"
+        echo "FAIL  $desc (wanted $want, got $got)"
+        sed 's/^/      /' "$T/out"
+        failures=$((failures + 1))
     fi
 }
 
-# Parse command line arguments
-TEST_TYPE="all"
-if [ $# -gt 0 ]; then
-    TEST_TYPE=$1
+config() { jq "$1" "$CFG" > "$T/cfg.json"; echo "$T/cfg.json"; }
+
+echo "== verdicts"
+mock NO;              expect pass  "allowed country"                  "$CHECK" "$CFG" push
+mock IR;              expect block "blocked country"                  "$CHECK" "$CFG" push
+mock ir;              expect block "lowercase country from provider"  "$CHECK" "$CFG" pull
+mock UA "Crimea";     expect block "blocked region"                   "$CHECK" "$CFG" push
+mock UA "Kyiv City";  expect pass  "other region, same country"       "$CHECK" "$CFG" push
+mock DE;              expect block "allowlist: country not listed"    "$CHECK" "$(config '.mode = "allowlist" | .allowed_countries = ["NO"]')" push
+mock DE;              expect pass  "blocklist mode ignores allowlist" "$CHECK" "$(config '.allowed_countries = ["NO"]')" push
+mock IR;              expect pass  "enable_push_check: false"         "$CHECK" "$(config '.enable_push_check = false')" push
+mock IR;              expect block "enable_pull_check: false only skips pulls" "$CHECK" "$(config '.enable_pull_check = false')" push
+echo '<html>Just a moment...</html>' > "$T/geo.json"
+expect block "HTML from a provider fails closed"                     "$CHECK" "$CFG" push
+mock IR
+expect pass  "IPCHECK_BYPASS=1"                                      env IPCHECK_BYPASS=1 "$CHECK" "$CFG" push
+expect block "missing config fails closed"                           "$CHECK" "$T/nope.json" push
+grep -qs 'Push blocked from IR: blocked' "$HOME/.git_ip_error.log" \
+    && echo "ok    blocks are logged" || { echo "FAIL  blocks are logged"; failures=$((failures + 1)); }
+printf '{"ip":"203.0.113.7","country":"NO","city":"\\u001b]0;pwned\\u0007Oslo"}' > "$T/geo.json"
+"$CHECK" "$(config '.mode = "allowlist" | .allowed_countries = ["SE"]')" push > "$T/out" 2>&1
+if grep -q $'\033]0;' "$T/out"; then
+    echo "FAIL  provider text can't inject terminal escapes"; failures=$((failures + 1))
+else
+    echo "ok    provider text can't inject terminal escapes"
 fi
 
-# Show usage
-if [ "$TEST_TYPE" = "--help" ] || [ "$TEST_TYPE" = "-h" ]; then
-    echo "Usage: $0 [test-type]"
-    echo ""
-    echo "Test types:"
-    echo "  all      - Run all tests (default)"
-    echo "  current  - Test with current IP location"
-    echo "  bypass   - Test bypass mechanisms"
-    echo "  helper   - Test git-ip-check helper"
-    echo "  pull     - Test pull protection"
-    echo "  global   - Test global enable/disable controls"
-    echo ""
-    echo "Examples:"
-    echo "  ./test.sh          # Run all tests"
-    echo "  ./test.sh current  # Test current location only"
-    echo "  ./test.sh bypass   # Test bypass methods"
-    echo "  ./test.sh pull     # Test pull protection"
-    exit 0
-fi
+echo "== cache"
+export GIT_IP_GUARD_CACHE_TTL=300
+mkdir -p "$HOME/.cache/git-ip-guard"
+printf '%s some-other-route\n{"ip":"203.0.113.7","country":"IR"}\n' "$(date +%s)" > "$HOME/.cache/git-ip-guard/last.json"
+mock NO;  expect pass  "a cache from another route is ignored"      "$CHECK" "$CFG" push
+mock IR;  expect pass  "same route within the TTL uses the cache"   "$CHECK" "$CFG" push
+expect block "IPCHECK_NO_CACHE=1 looks again"                       env IPCHECK_NO_CACHE=1 "$CHECK" "$CFG" push
+export GIT_IP_GUARD_CACHE_TTL=0
 
-# Test 1: Current Location Check
-test_current_location() {
-    echo -e "${YELLOW}Test 1: Current Location Check${NC}"
-    echo "----------------------------------------"
-
-    # Use the same multi-provider helper the hooks use, so this test reflects
-    # what would actually happen on a push/pull.
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-    LIB="$PROJECT_DIR/scripts/lib/ip-common.sh"
-    if [ ! -r "$LIB" ]; then
-        echo -e "${RED}Cannot locate ip-common.sh at $LIB${NC}"
-        return 1
-    fi
-    # shellcheck source=/dev/null
-    . "$LIB"
-
-    IP_INFO=$(IPCHECK_NO_CACHE=1 get_ip_info)
-    if [ -z "$IP_INFO" ]; then
-        echo -e "${RED}Failed to fetch IP information from any provider${NC}"
-        return 1
-    fi
-
-    COUNTRY=$(printf '%s' "$IP_INFO" | jq -r '.country // "Unknown"')
-    CITY=$(printf '%s' "$IP_INFO"    | jq -r '.city // "Unknown"')
-    IP=$(printf '%s' "$IP_INFO"      | jq -r '.ip // "Unknown"')
-    PROVIDER=$(printf '%s' "$IP_INFO" | jq -r '.provider // "unknown"')
-
-    echo "Your current location:"
-    echo "  IP: $IP"
-    echo "  Country: $COUNTRY"
-    echo "  City: $CITY"
-    echo "  Source: $PROVIDER"
-    echo ""
-
-    # Read the blocklist from the actual config rather than hardcoding it.
-    CONFIG="$HOME/.git-templates/hooks/ip-check-config.json"
-    [ -f "$CONFIG" ] || CONFIG="$PROJECT_DIR/config/ip-check-config.json"
-    if [ -f "$CONFIG" ] && jq -e . "$CONFIG" >/dev/null 2>&1; then
-        if jq -e --arg c "$COUNTRY" '(.blocked_countries // []) | map(ascii_upcase) | index($c)' "$CONFIG" >/dev/null; then
-            echo -e "${RED}⛔ Your current location ($COUNTRY) would be BLOCKED${NC}"
-        else
-            echo -e "${GREEN}✅ Your current location ($COUNTRY) is ALLOWED${NC}"
-        fi
-    else
-        echo -e "${YELLOW}No config available to evaluate against.${NC}"
-    fi
-    echo ""
+echo "== whereabouts"
+W="$HOME/Library/Application Support/Whereabouts"
+mkdir -p "$W"
+sh -c 'exit 0' & dead_pid=$!
+wait "$dead_pid"
+# status <pid> <kind> <seconds ago>: Whereabouts saw Iran.
+status() {
+    printf '{"checkedAt":%s,"country":"Iran","countryCode":"IR","ip":"198.51.100.1","kind":"%s","pid":%s,"version":1}' \
+        "$(( $(date +%s) - $3 ))" "$2" "$1" > "$W/status.json"
 }
+mock NO
+status $$ safe 5;               expect block "uses a running Whereabouts' location"   "$CHECK" "$CFG" push
+status $$ checking 5;           expect pass  "'checking' falls back to a lookup"      "$CHECK" "$CFG" push
+status $$ safe 600;             expect pass  "an old check falls back to a lookup"    "$CHECK" "$CFG" push
+status "$dead_pid" safe 5;      expect pass  "a crashed app's file is ignored"        "$CHECK" "$CFG" push
+status $$ safe 5;               expect pass  "IPCHECK_NO_CACHE=1 skips Whereabouts"   env IPCHECK_NO_CACHE=1 "$CHECK" "$CFG" push
+rm -rf "$HOME/Library"
 
-# Test 2: Bypass Mechanisms
-test_bypass_mechanisms() {
-    echo -e "${YELLOW}Test 2: Bypass Mechanisms${NC}"
-    echo "----------------------------------------"
-    
-    # Create a test repository
-    TEST_REPO="/tmp/test-git-ip-guard-$$"
-    mkdir -p "$TEST_REPO"
-    cd "$TEST_REPO"
-    git init --quiet
-    
-    # Copy hooks + helper + library
-    mkdir -p .git/hooks
-    cp ~/.git-templates/hooks/pre-push .git/hooks/ 2>/dev/null
-    cp ~/.git-templates/hooks/pre-merge-commit .git/hooks/ 2>/dev/null
-    cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null || true
-    cp ~/.git-templates/hooks/git-ip-check .git/hooks/ 2>/dev/null || true
-    cp ~/.git-templates/hooks/ip-common.sh .git/hooks/ 2>/dev/null || true
-    
-    # Test 2.1: Environment variable bypass (push)
-    echo "Testing IPCHECK_BYPASS environment variable (push)..."
-    IPCHECK_BYPASS=1 .git/hooks/pre-push 2>&1 | grep -q "bypassed"
-    show_result $? "Environment variable bypass (push)"
-    
-    # Test 2.2: Environment variable bypass (pull)
-    if [ -f .git/hooks/pre-merge-commit ]; then
-        echo "Testing IPCHECK_BYPASS environment variable (pull)..."
-        IPCHECK_BYPASS=1 .git/hooks/pre-merge-commit 2>&1 | grep -q "bypassed"
-        show_result $? "Environment variable bypass (pull)"
-    fi
-    
-    # Test 2.3: Repository config bypass
-    echo "Testing git config bypass..."
-    git config ipcheck.disable true
-    .git/hooks/pre-push 2>&1 | grep -q "IP check disabled"
-    show_result $? "Repository config bypass (all operations)"
-    
-    # Test 2.4: Operation-specific bypass
-    git config --unset ipcheck.disable
-    git config ipcheck.push.disable true
-    .git/hooks/pre-push 2>&1 | grep -q "disabled.*push"
-    show_result $? "Repository config bypass (push only)"
-    
-    if [ -f .git/hooks/pre-merge-commit ]; then
-        git config ipcheck.pull.disable true
-        .git/hooks/pre-merge-commit 2>&1 | grep -q "disabled.*pull"
-        show_result $? "Repository config bypass (pull only)"
-    fi
-    
-    # Clean up
-    cd - > /dev/null
-    rm -rf "$TEST_REPO"
-    echo ""
-}
-
-# Test 3: Helper Script
-test_helper_script() {
-    echo -e "${YELLOW}Test 3: Git IP Check Helper${NC}"
-    echo "----------------------------------------"
-    
-    # Check if helper is available
-    if command -v git-ip-check >/dev/null 2>&1; then
-        echo "Testing system-wide helper..."
-        HELPER_CMD="git-ip-check"
-    elif [ -x "./git-ip-check" ]; then
-        echo "Testing local helper..."
-        HELPER_CMD="./git-ip-check"
-    else
-        echo -e "${YELLOW}Helper script not found, skipping helper tests${NC}"
-        echo ""
-        return
-    fi
-    
-    # Create test config
-    TEST_CONFIG="/tmp/test-config-$$.json"
-    cat > "$TEST_CONFIG" << EOF
-{
-  "blocked_countries": ["XX", "YY"],
-  "blocked_regions": {},
-  "ip_services": ["https://ipinfo.io/json"],
-  "cache_duration": 300,
-  "log_file": "/tmp/test-ip-error.log"
-}
+echo "== install"
+# Whatever ssh command was configured before must keep running after the check.
+cat > "$T/fake-ssh" <<'EOF'
+#!/bin/sh
+# Stand-in for ssh: answers git's -G probe, then runs the remote command locally.
+for arg; do last=$arg; done
+case " $* " in *" -G "*) exit 0 ;; esac
+exec sh -c "$last"
 EOF
-    
-    # Test with current location (should pass with test config)
-    $HELPER_CMD "$TEST_CONFIG" >/dev/null 2>&1
-    show_result $? "Helper with test config"
-    
-    # Test with bypass
-    SKIP_IP_CHECK=1 $HELPER_CMD "$TEST_CONFIG" 2>&1 | grep -q "Bypassing"
-    show_result $? "Helper with bypass variable"
-    
-    # Clean up
-    rm -f "$TEST_CONFIG"
-    echo ""
-}
+chmod +x "$T/fake-ssh"
+git config --global core.sshCommand "$T/fake-ssh"
+expect pass "install.sh" "$ROOT/scripts/install.sh"
+[ "$(git config --global ipguard.sshCommand)" = "$T/fake-ssh" ] \
+    && echo "ok    previous core.sshCommand is chained" \
+    || { echo "FAIL  previous core.sshCommand is chained"; failures=$((failures + 1)); }
 
-# Test 4: Simulated Push Test
-test_simulated_push() {
-    echo -e "${YELLOW}Test 4: Simulated Push Test${NC}"
-    echo "----------------------------------------"
-    
-    # Create a test repository
-    TEST_REPO="/tmp/test-push-$$"
-    mkdir -p "$TEST_REPO"
-    cd "$TEST_REPO"
-    git init --quiet
-    
-    # Copy the pre-push hook
-    mkdir -p .git/hooks
-    cp ~/.git-templates/hooks/pre-push .git/hooks/
-    cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null || true
-    
-    # Create a test commit
-    echo "test" > test.txt
-    git add test.txt
-    git commit -m "Test commit" --quiet
-    
-    # Add a fake remote
-    git remote add origin https://github.com/test/test.git
-    
-    echo "Simulating git push (hook will run)..."
-    
-    # Run the pre-push hook directly
-    .git/hooks/pre-push
-    RESULT=$?
-    
-    if [ $RESULT -eq 0 ]; then
-        echo -e "${GREEN}✅ Push would be ALLOWED from your location${NC}"
-    else
-        echo -e "${RED}⛔ Push would be BLOCKED from your location${NC}"
-    fi
-    
-    # Clean up
-    cd - > /dev/null
-    rm -rf "$TEST_REPO"
-    echo ""
-}
+echo "== hooks"
+git init -q --bare "$T/remote.git"
+mock NO
+expect pass  "clone over ssh"                          git clone -q "localhost:$T/remote.git" "$T/work"
+[ -x "$T/work/.git/hooks/pre-push" ] && echo "ok    clone gets the template hook" \
+    || { echo "FAIL  clone gets the template hook"; failures=$((failures + 1)); }
+cd "$T/work" || exit 1
+echo one > f && git add f && git commit -qm one
+expect pass  "push from an allowed country"            git push -q origin main
+mock IR
+echo two >> f && git commit -qam two
+expect block "push from a blocked country"             git push -q origin main
+expect block "push --no-verify is still checked (ssh)" git push -q --no-verify origin main
+expect block "fetch from a blocked country"            git fetch -q
+expect pass  "local rebase isn't checked"              .git/hooks/pre-rebase main
+expect block "rebase during pull is checked"           env GIT_REFLOG_ACTION="pull --rebase" .git/hooks/pre-rebase main
+expect pass  "post-merge only warns"                   env GIT_REFLOG_ACTION=pull .git/hooks/post-merge 0
+git config ipcheck.disable true
+expect pass  "git config ipcheck.disable true"         git push -q origin main
+git config --unset ipcheck.disable
+cd "$ROOT" || exit 1
 
-# Test 5: Pull Protection Test
-test_pull_protection() {
-    echo -e "${YELLOW}Test 5: Pull Protection Test${NC}"
-    echo "----------------------------------------"
-    
-    if [ ! -f ~/.git-templates/hooks/pre-merge-commit ]; then
-        echo -e "${YELLOW}Pre-merge-commit hook not installed, skipping pull tests${NC}"
-        echo ""
-        return
-    fi
-    
-    # Create a test repository
-    TEST_REPO="/tmp/test-pull-$$"
-    mkdir -p "$TEST_REPO"
-    cd "$TEST_REPO"
-    git init --quiet
-    
-    # Copy the pull hook
-    mkdir -p .git/hooks
-    cp ~/.git-templates/hooks/pre-merge-commit .git/hooks/
-    cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null || true
-    cp ~/.git-templates/hooks/git-ip-check .git/hooks/ 2>/dev/null || true
-    
-    echo "Simulating pull operation (pre-merge-commit hook will run)..."
-    
-    # Run the pre-merge-commit hook directly
-    .git/hooks/pre-merge-commit
-    RESULT=$?
-    
-    if [ $RESULT -eq 0 ]; then
-        echo -e "${GREEN}✅ Pull would be ALLOWED from your location${NC}"
-    else
-        echo -e "${RED}⛔ Pull would be BLOCKED from your location${NC}"
-    fi
-    
-    # Clean up
-    cd - > /dev/null
-    rm -rf "$TEST_REPO"
-    echo ""
-}
+echo "== apply to existing repos"
+git init -q "$T/existing"
+printf '#!/bin/sh\necho husky\n' > "$T/existing/.git/hooks/pre-push"
+printf '#!/bin/bash\n/usr/local/bin/git-ip-check "$CONFIG_FILE" pull\n' > "$T/existing/.git/hooks/pre-rebase"
+touch "$T/existing/.git/hooks/ip-common.sh"
+expect pass "apply-to-existing-repos.sh" "$ROOT/scripts/apply-to-existing-repos.sh" -y "$T"
+grep -q husky "$T/existing/.git/hooks/pre-push" && grep -q git-ip-guard "$T/existing/.git/hooks/pre-rebase" \
+    && [ ! -e "$T/existing/.git/hooks/ip-common.sh" ] \
+    && echo "ok    keeps foreign hooks, replaces v2 ones" \
+    || { echo "FAIL  keeps foreign hooks, replaces v2 ones"; failures=$((failures + 1)); }
 
-# Test 6: Global Control Test
-test_global_controls() {
-    echo -e "${YELLOW}Test 6: Global Control Test${NC}"
-    echo "----------------------------------------"
-    
-    # Test git-ip-control if available
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-    CONTROL_SCRIPT="$PROJECT_DIR/scripts/git-ip-control"
-    
-    if [ -f "$CONTROL_SCRIPT" ]; then
-        echo "Testing git-ip-control status command..."
-        chmod +x "$CONTROL_SCRIPT"
-        "$CONTROL_SCRIPT" status > /dev/null 2>&1
-        show_result $? "git-ip-control status command"
-    else
-        echo -e "${YELLOW}git-ip-control script not found, testing manual config${NC}"
-    fi
-    
-    # Test global disable
-    echo "Testing global disable..."
-    git config --global ipcheck.global.disable true
-    
-    # Create test repo to verify global disable works
-    TEST_REPO="/tmp/test-global-$$"
-    mkdir -p "$TEST_REPO"
-    cd "$TEST_REPO"
-    git init --quiet
-    
-    mkdir -p .git/hooks
-    cp ~/.git-templates/hooks/pre-push .git/hooks/ 2>/dev/null
-    cp ~/.git-templates/hooks/ip-check-config.json .git/hooks/ 2>/dev/null
-    cp ~/.git-templates/hooks/git-ip-check .git/hooks/ 2>/dev/null
-    
-    .git/hooks/pre-push 2>&1 | grep -q "globally disabled"
-    show_result $? "Global disable functionality"
-    
-    # Clean up global config
-    git config --global --unset ipcheck.global.disable 2>/dev/null
-    
-    # Test operation-specific global disable
-    echo "Testing operation-specific global disable..."
-    git config --global ipcheck.push.disable true
-    
-    .git/hooks/pre-push 2>&1 | grep -q "disabled globally for push"
-    show_result $? "Global push disable functionality"
-    
-    # Clean up
-    git config --global --unset ipcheck.push.disable 2>/dev/null
-    cd - > /dev/null
-    rm -rf "$TEST_REPO"
-    echo ""
-}
+echo "== uninstall"
+expect pass "uninstall.sh" "$ROOT/scripts/uninstall.sh"
+[ "$(git config --global core.sshCommand)" = "$T/fake-ssh" ] && [ ! -e "$HOME/.git-templates/hooks/pre-push" ] \
+    && echo "ok    restores core.sshCommand and removes template hooks" \
+    || { echo "FAIL  restores core.sshCommand and removes template hooks"; failures=$((failures + 1)); }
+cd "$T/work" || exit 1
+expect pass "hooks left in repos skip the check once uninstalled" git push -q origin main
+cd "$ROOT" || exit 1
 
-# Main test execution
-case "$TEST_TYPE" in
-    "current")
-        test_current_location
-        ;;
-    "bypass")
-        test_bypass_mechanisms
-        ;;
-    "helper")
-        test_helper_script
-        ;;
-    "pull")
-        test_pull_protection
-        ;;
-    "global")
-        test_global_controls
-        ;;
-    "all"|*)
-        test_current_location
-        test_bypass_mechanisms
-        test_helper_script
-        test_simulated_push
-        test_pull_protection
-        test_global_controls
-        
-        echo -e "${BLUE}========================================${NC}"
-        echo -e "${BLUE}         Test Suite Complete            ${NC}"
-        echo -e "${BLUE}========================================${NC}"
-        ;;
-esac
+echo ""
+if [ "$failures" -eq 0 ]; then echo "All tests passed."; else echo "$failures failed."; exit 1; fi

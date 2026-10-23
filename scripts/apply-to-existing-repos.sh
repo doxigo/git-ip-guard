@@ -28,7 +28,8 @@ while [ $# -gt 0 ]; do
 Usage: $0 [OPTIONS] [DIRECTORIES...]
 
 Options:
-  --force, -f       Overwrite existing hooks without per-repo prompts.
+  --force, -f       Also replace hooks that aren't git-ip-guard's (husky,
+                    pre-commit, your own). By default those are kept.
   --yes, -y         Auto-confirm interactive menu prompts (use sensible defaults).
   --all, -a         Scan the entire \$HOME for git repos. Pairs well with --force.
   --recursive, -r   Descend into nested directories (default: only direct
@@ -88,80 +89,40 @@ done
 { [ "$SCAN_ALL" = "true" ] || [ "$RECURSIVE" = "true" ]; } && MAX_DEPTH=""
 
 [ "$FORCE_UPDATE" = "true" ] && \
-    echo -e "${YELLOW}Force mode: existing hooks will be overwritten without prompting${NC}"
+    echo -e "${YELLOW}Force mode: hooks from other tools will be replaced too${NC}"
 [ "$ASSUME_YES" = "true" ] && \
     echo -e "${YELLOW}Auto-yes: interactive prompts will use sensible defaults${NC}"
 { [ "$FORCE_UPDATE" = "true" ] || [ "$ASSUME_YES" = "true" ] || [ "$SCAN_ALL" = "true" ]; } && echo ""
 
-# Function to apply template to a repository
+# Install the hook in one repo. Our own hooks (v2 or v3) are replaced; anyone else's
+# (husky, pre-commit, a hand-written one) is skipped unless --force.
 apply_to_repo() {
     local git_dir="$1"
     local repo_dir="${git_dir%/.git}"
-    
-    # Check if hook already exists
-    if [ -f "$git_dir/hooks/pre-push" ] && [ "$FORCE_UPDATE" != "true" ]; then
-        echo -e "  ${YELLOW}⚠️  Pre-push hook already exists in $repo_dir${NC}"
-        echo -n "     Overwrite? (y/N): "
-        read -r response < /dev/tty
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            return 1
-        fi
-    elif [ -f "$git_dir/hooks/pre-push" ] && [ "$FORCE_UPDATE" = "true" ]; then
-        echo -e "  ${YELLOW}⟳ Updating existing hook in $repo_dir${NC}"
-    fi
-    
-    # Create hooks directory if it doesn't exist
+    local hook target skipped_hooks=""
+
     mkdir -p "$git_dir/hooks"
-    
-    # Get the directory where this script is located
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local project_dir="$(dirname "$script_dir")"
-    
-    # Copy the pre-push hook from hooks directory
-    if cp "$project_dir/hooks/pre-push" "$git_dir/hooks/pre-push" 2>/dev/null; then
-        chmod +x "$git_dir/hooks/pre-push"
-    else
-        echo -e "  ${RED}❌ Failed to copy pre-push hook to: $repo_dir${NC}"
-        return 1
-    fi
-    
-    # Copy the pre-merge-commit hook for pull protection
-    if cp "$project_dir/hooks/pre-merge-commit" "$git_dir/hooks/pre-merge-commit" 2>/dev/null; then
-        chmod +x "$git_dir/hooks/pre-merge-commit"
-    else
-        echo -e "  ${YELLOW}⚠️  Failed to copy pre-merge-commit hook (pull protection not available)${NC}"
-    fi
-    
-    # Copy the pre-rebase hook for rebase protection
-    if cp "$project_dir/hooks/pre-rebase" "$git_dir/hooks/pre-rebase" 2>/dev/null; then
-        chmod +x "$git_dir/hooks/pre-rebase"
-    else
-        echo -e "  ${YELLOW}⚠️  Failed to copy pre-rebase hook (rebase protection not available)${NC}"
-    fi
-    
-    # Copy the post-merge hook for fast-forward pull detection
-    if cp "$project_dir/hooks/post-merge" "$git_dir/hooks/post-merge" 2>/dev/null; then
-        chmod +x "$git_dir/hooks/post-merge"
-    else
-        echo -e "  ${YELLOW}⚠️  Failed to copy post-merge hook (fast-forward detection not available)${NC}"
-    fi
-    
-    # Copy the config file from config directory
-    if cp "$project_dir/config/ip-check-config.json" "$git_dir/hooks/ip-check-config.json" 2>/dev/null; then
-        # Copy the helper script and shared library
-        if [ -f "$project_dir/scripts/git-ip-check" ]; then
-            cp "$project_dir/scripts/git-ip-check" "$git_dir/hooks/git-ip-check" 2>/dev/null
-            chmod +x "$git_dir/hooks/git-ip-check" 2>/dev/null
+    for hook in pre-push pre-merge-commit pre-rebase post-merge; do
+        target="$git_dir/hooks/$hook"
+        if [ -e "$target" ] && ! grep -qE 'git-ip-check|git-ip-guard' "$target" 2>/dev/null \
+           && [ "$FORCE_UPDATE" != "true" ]; then
+            skipped_hooks="$skipped_hooks $hook"
+            continue
         fi
-        if [ -f "$project_dir/scripts/lib/ip-common.sh" ]; then
-            cp "$project_dir/scripts/lib/ip-common.sh" "$git_dir/hooks/ip-common.sh" 2>/dev/null
-        fi
-        echo -e "  ${GREEN}✅ Applied to: $repo_dir (push + pull + rebase + fast-forward protection)${NC}"
-        return 0
+        cp "$HOOK_SRC" "$target" && chmod +x "$target" || {
+            echo -e "  ${RED}❌ Failed to write $target${NC}"
+            return 1
+        }
+    done
+    # v2 copied the checker, library and a config into every repo; v3 keeps one central copy.
+    rm -f "$git_dir/hooks/git-ip-check" "$git_dir/hooks/ip-common.sh" "$git_dir/hooks/ip-check-config.json"
+
+    if [ -n "$skipped_hooks" ]; then
+        echo -e "  ${YELLOW}⚠️  $repo_dir: kept its own${skipped_hooks} (use --force to replace)${NC}"
     else
-        echo -e "  ${RED}❌ Failed to copy config file to: $repo_dir${NC}"
-        return 1
+        echo -e "  ${GREEN}✅ Applied to: $repo_dir${NC}"
     fi
+    return 0
 }
 
 COMMON_DIRS=(
@@ -222,14 +183,10 @@ else
     esac
 fi
 
-# Check if required files exist in the project directories
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-project_dir="$(dirname "$script_dir")"
-if [ ! -f "$project_dir/hooks/pre-push" ] || [ ! -f "$project_dir/config/ip-check-config.json" ]; then
-    echo -e "${RED}Error: Required files (hooks/pre-push, config/ip-check-config.json) not found.${NC}"
-    echo -e "${RED}Please make sure you're running this script from the git-ip-guard directory.${NC}"
-    exit 1
-fi
+HOOK_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hooks/git-ip-guard-hook"
+[ -f "$HOOK_SRC" ] || { echo -e "${RED}Error: $HOOK_SRC not found. Run this from the git-ip-guard checkout.${NC}"; exit 1; }
+[ -x "$HOME/.local/share/git-ip-guard/git-ip-check" ] || \
+    echo -e "${YELLOW}Note: run ./scripts/install.sh too, or these hooks will skip the check.${NC}"
 
 # Counter for processed repos
 count=0
@@ -318,8 +275,5 @@ if [ $skipped -gt 0 ]; then
 fi
 echo -e "${BLUE}========================================${NC}"
 echo ""
-echo "Note: The Git IP Guard hook is now active in these repositories."
-echo "To test, try: git push"
-echo ""
 echo "To disable for a specific repo:"
-echo "  git config hooks.allowpush true"
+echo "  git config ipcheck.disable true"

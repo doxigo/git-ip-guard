@@ -4,32 +4,16 @@
 
 set -u
 
-_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_lib_candidates=(
-    "/usr/local/lib/git-ip-guard/ip-common.sh"
-    "$HOME/.git-templates/hooks/ip-common.sh"
-    "$_self_dir/lib/ip-common.sh"
-    "$_self_dir/ip-common.sh"
-)
-for _lib in "${_lib_candidates[@]}"; do
-    if [ -r "$_lib" ]; then
-        # shellcheck source=/dev/null
-        . "$_lib"
-        break
-    fi
+for _lib in "$(dirname "${BASH_SOURCE[0]}")/lib/ip-common.sh" "$HOME/.local/share/git-ip-guard/lib/ip-common.sh"; do
+    [ -r "$_lib" ] && break
 done
-if ! command -v get_ip_info >/dev/null 2>&1; then
-    echo "Error: ip-common.sh helper library not found. Reinstall git-ip-guard." >&2
-    exit 1
-fi
+# shellcheck source=lib/ip-common.sh
+. "$_lib" 2>/dev/null || { echo "git-ip-guard: ip-common.sh not found. Reinstall git-ip-guard." >&2; exit 1; }
 
-# CLI flags.
-VERBOSE=0
-NO_CACHE=0
 for arg in "$@"; do
     case "$arg" in
-        -v|--verbose) VERBOSE=1 ;;
-        --no-cache) NO_CACHE=1 ;;
+        -v|--verbose) export GIT_IP_GUARD_VERBOSE=1 ;;
+        --no-cache) export IPCHECK_NO_CACHE=1 ;;
         -h|--help)
             cat <<USAGE
 Usage: git-ip-info [--verbose] [--no-cache]
@@ -40,8 +24,10 @@ USAGE
             ;;
     esac
 done
-[ "$VERBOSE" = "1" ] && export GIT_IP_GUARD_VERBOSE=1
-[ "$NO_CACHE" = "1" ] && export IPCHECK_NO_CACHE=1
+
+rule="${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+# label value [color]: provider and git config text is printed with %s, never interpreted.
+row() { printf '  %s%-12s%s %s%s%s\n' "$BOLD" "$1" "$NC" "${3:-$GREEN}" "$2" "$NC"; }
 
 echo -e "${CYAN}${BOLD}╔═══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}${BOLD}║                  Git & IP Information                     ║${NC}"
@@ -50,123 +36,71 @@ echo ""
 
 # --- Git identity --------------------------------------------------------------
 echo -e "${BLUE}${BOLD}Git Configuration:${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-
-GIT_USER_NAME=$(git config --get user.name 2>/dev/null)
-GIT_USER_EMAIL=$(git config --get user.email 2>/dev/null)
-
-if git rev-parse --git-dir >/dev/null 2>&1; then
-    LOCAL_NAME=$(git config --local --get user.name 2>/dev/null)
-    LOCAL_EMAIL=$(git config --local --get user.email 2>/dev/null)
-    GLOBAL_NAME=$(git config --global --get user.name 2>/dev/null)
-    GLOBAL_EMAIL=$(git config --global --get user.email 2>/dev/null)
-
-    if [ -n "$GIT_USER_NAME" ]; then
-        echo -e "  ${BOLD}User Name:${NC}  ${GREEN}$GIT_USER_NAME${NC}"
+echo "$rule"
+identity() {
+    local value
+    value=$(git config --get "user.$1" 2>/dev/null)
+    if [ -z "$value" ]; then
+        row "$2" "Not configured" "$RED"
+    elif [ -n "$(git config --local --get "user.$1" 2>/dev/null)" ]; then
+        row "$2" "$value (this repository)"
     else
-        echo -e "  ${BOLD}User Name:${NC}  ${RED}Not configured${NC}"
+        row "$2" "$value"
     fi
-    [ -n "$LOCAL_NAME" ] && [ "$LOCAL_NAME" != "$GLOBAL_NAME" ] && \
-        echo -e "              ${YELLOW}(Local override in this repository)${NC}"
-
-    if [ -n "$GIT_USER_EMAIL" ]; then
-        echo -e "  ${BOLD}User Email:${NC} ${GREEN}$GIT_USER_EMAIL${NC}"
-    else
-        echo -e "  ${BOLD}User Email:${NC} ${RED}Not configured${NC}"
-    fi
-    [ -n "$LOCAL_EMAIL" ] && [ "$LOCAL_EMAIL" != "$GLOBAL_EMAIL" ] && \
-        echo -e "              ${YELLOW}(Local override in this repository)${NC}"
-else
-    echo -e "  ${BOLD}User Name:${NC}  ${GREEN}${GIT_USER_NAME:-Not configured}${NC} ${YELLOW}(global)${NC}"
-    echo -e "  ${BOLD}User Email:${NC} ${GREEN}${GIT_USER_EMAIL:-Not configured}${NC} ${YELLOW}(global)${NC}"
-fi
+}
+identity name "User Name:"
+identity email "User Email:"
 echo ""
 
 # --- IP info -------------------------------------------------------------------
 echo -e "${BLUE}${BOLD}IP & Location Information:${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}Fetching IP information...${NC}"
+echo "$rule"
 
-IP_INFO=$(get_ip_info)
-if [ -z "$IP_INFO" ]; then
+if ! IP_INFO=$(get_ip_info); then
     echo -e "${RED}  ❌ Could not fetch IP information from any provider.${NC}"
     echo -e "${YELLOW}  Run with --verbose to see provider attempts:${NC}"
     echo -e "      git-ip-info --verbose --no-cache"
-    echo ""
     exit 1
 fi
 
-IP=$(printf '%s' "$IP_INFO"        | jq -r '.ip // empty')
-COUNTRY=$(printf '%s' "$IP_INFO"   | jq -r '.country // empty')
-COUNTRY_NAME=$(printf '%s' "$IP_INFO" | jq -r '.country_name // empty')
-CITY=$(printf '%s' "$IP_INFO"      | jq -r '.city // empty')
-REGION=$(printf '%s' "$IP_INFO"    | jq -r '.region // empty')
-ORG=$(printf '%s' "$IP_INFO"       | jq -r '.org // empty')
-TIMEZONE=$(printf '%s' "$IP_INFO"  | jq -r '.timezone // empty')
-PROVIDER=$(printf '%s' "$IP_INFO"  | jq -r '.provider // empty')
+IFS=$'\x1f' read -r IP COUNTRY COUNTRY_NAME CITY REGION ORG TIMEZONE PROVIDER <<< "$(printf '%s' "$IP_INFO" | jq -r '
+    [.ip, .country, .country_name, .city, .region, .org, .timezone, .provider] | map(. // "") | join("\u001f")')"
 FLAG=$(get_flag "$COUNTRY")
+{ [ -z "$COUNTRY_NAME" ] || [ "$COUNTRY_NAME" = "$COUNTRY" ]; } && COUNTRY_NAME=$(get_country_name "$COUNTRY")
 
-[ -z "$COUNTRY_NAME" ] || [ "$COUNTRY_NAME" = "$COUNTRY" ] && COUNTRY_NAME=$(get_country_name "$COUNTRY")
-
-echo -e "  ${BOLD}IP Address:${NC}  ${GREEN}${IP:-unknown}${NC}"
-
-LOCATION="$FLAG ${GREEN}"
-[ -n "$CITY" ]   && LOCATION="${LOCATION}${CITY}"
-if [ -n "$REGION" ] && [ "$REGION" != "$CITY" ]; then
-    [ -n "$CITY" ] && LOCATION="${LOCATION}, ${REGION}" || LOCATION="${LOCATION}${REGION}"
-fi
-if [ -n "$COUNTRY_NAME" ]; then
-    [ -n "$CITY" ] || [ -n "$REGION" ] && LOCATION="${LOCATION}, ${COUNTRY_NAME}" || LOCATION="${LOCATION}${COUNTRY_NAME}"
-fi
-LOCATION="${LOCATION}${NC}"
-
-echo -e "  ${BOLD}Location:${NC}    $LOCATION"
-[ -n "$ORG" ]      && echo -e "  ${BOLD}ISP/Org:${NC}     ${GREEN}$ORG${NC}"
-[ -n "$TIMEZONE" ] && echo -e "  ${BOLD}Timezone:${NC}    ${GREEN}$TIMEZONE${NC}"
-[ -n "$PROVIDER" ] && echo -e "  ${BOLD}Source:${NC}      ${CYAN}$PROVIDER${NC}"
+LOCATION="$CITY"
+[ -n "$REGION" ] && [ "$REGION" != "$CITY" ] && LOCATION="${LOCATION:+$LOCATION, }$REGION"
+[ -n "$COUNTRY_NAME" ] && LOCATION="${LOCATION:+$LOCATION, }$COUNTRY_NAME"
+row "IP Address:" "${IP:-unknown}"
+row "Location:" "$FLAG $LOCATION"
+[ -n "$ORG" ]      && row "ISP/Org:" "$ORG"
+[ -n "$TIMEZONE" ] && row "Timezone:" "$TIMEZONE"
+[ -n "$PROVIDER" ] && row "Source:" "$PROVIDER" "$CYAN"
 echo ""
 
 # --- Guard status --------------------------------------------------------------
 echo -e "${BLUE}${BOLD}Git IP Guard Status:${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo "$rule"
 
-CONFIG_FILE="$HOME/.git-templates/hooks/ip-check-config.json"
-if [ -f "$CONFIG_FILE" ] && jq -e . "$CONFIG_FILE" >/dev/null 2>&1; then
-    MODE=$(jq -r '.mode // "blocklist"' "$CONFIG_FILE")
-    BLOCKED_HIT=$(jq -r --arg c "$COUNTRY" '(.blocked_countries // []) | map(ascii_upcase) | index($c) // empty' "$CONFIG_FILE")
-    ALLOWED_HIT=$(jq -r --arg c "$COUNTRY" '(.allowed_countries // []) | map(ascii_upcase) | index($c) // empty' "$CONFIG_FILE")
-    HAS_ALLOWED=$(jq -r '(.allowed_countries // []) | length' "$CONFIG_FILE")
-
-    DENY=0
-    if [ -n "$BLOCKED_HIT" ] && { [ "$MODE" = "blocklist" ] || [ "$MODE" = "both" ]; }; then
-        DENY=1
-    fi
-    if { [ "$MODE" = "allowlist" ] || [ "$MODE" = "both" ]; } && [ "$HAS_ALLOWED" -gt 0 ] && [ -z "$ALLOWED_HIT" ]; then
-        DENY=1
-    fi
-
-    if [ "$DENY" = "1" ]; then
-        echo -e "  ${RED}⛔ Your location ($FLAG $COUNTRY_NAME) would be blocked under mode=$MODE.${NC}"
-        echo -e "  ${YELLOW}Git push/pull operations will fail from this location.${NC}"
-    else
-        echo -e "  ${GREEN}✅ Your location ($FLAG $COUNTRY_NAME) is allowed under mode=$MODE.${NC}"
-    fi
-
-    [ "${IPCHECK_BYPASS:-}" = "1" ] && \
-        echo -e "  ${YELLOW}⚠️  IPCHECK_BYPASS is set in this environment.${NC}"
-
-    if git rev-parse --git-dir >/dev/null 2>&1; then
-        [ "$(git config --get ipcheck.disable 2>/dev/null)" = "true" ] && \
-            echo -e "  ${YELLOW}⚠️  IP checks are disabled for this repository.${NC}"
-    fi
-    [ "$(git config --global --get ipcheck.global.disable 2>/dev/null)" = "true" ] && \
-        echo -e "  ${YELLOW}⚠️  IP checks are globally disabled.${NC}"
-elif [ -f "$CONFIG_FILE" ]; then
-    echo -e "  ${RED}Config file is present but invalid JSON: $CONFIG_FILE${NC}"
+if [ ! -f "$GIT_IP_GUARD_CONFIG" ]; then
+    echo -e "  ${YELLOW}Git IP Guard is not installed (no $GIT_IP_GUARD_CONFIG).${NC}"
+elif ! VERDICT=$(ip_guard_verdict "$GIT_IP_GUARD_CONFIG" "$IP_INFO"); then
+    echo -e "  ${RED}Config is not valid JSON: $GIT_IP_GUARD_CONFIG${NC}"
 else
-    echo -e "  ${YELLOW}Git IP Guard is not installed.${NC}"
+    MODE=$(jq -r '.mode // "blocklist"' "$GIT_IP_GUARD_CONFIG")
+    case "${VERDICT%%$'\x1f'*}" in
+        allowed)
+            printf '  %s✅ Your location (%s %s) is allowed under mode=%s.%s\n' "$GREEN" "$FLAG" "$COUNTRY_NAME" "$MODE" "$NC" ;;
+        *)
+            printf '  %s⛔ Your location (%s %s) would be blocked under mode=%s.%s\n' "$RED" "$FLAG" "$COUNTRY_NAME" "$MODE" "$NC"
+            echo -e "  ${YELLOW}Git push/pull operations will fail from this location.${NC}" ;;
+    esac
+    [ "${IPCHECK_BYPASS:-}" = "1" ] && echo -e "  ${YELLOW}⚠️  IPCHECK_BYPASS is set in this environment.${NC}"
+    git config --type=bool --show-scope --get-regexp '^ipcheck\..*disable$' 2>/dev/null | while read -r scope key value; do
+        [ "$value" = "true" ] && echo -e "  ${YELLOW}⚠️  $key is set ($scope config).${NC}"
+    done
 fi
 
 echo ""
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo "$rule"
 echo -e "${MAGENTA}Generated at: $(date '+%Y-%m-%d %H:%M:%S %Z')${NC}"

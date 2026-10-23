@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# ip-common.sh: shared helpers for Git IP Guard.
-# Sourced by git-ip-check, git-ip-info, and other scripts.
-# Provides IP fetching with multi-provider fallback, caching, country
-# normalization, flag/name lookups, and safe path expansion.
+# ip-common.sh: shared helpers for Git IP Guard, sourced by git-ip-check and git-ip-info.
+# IP lookup with multi-provider fallback and a route-aware cache, the allow/block
+# verdict, and flag/name lookups.
 
 # Colors (only set if not already defined so callers can override).
 : "${GREEN:=$'\033[0;32m'}"
@@ -15,16 +14,17 @@
 : "${BOLD:=$'\033[1m'}"
 : "${NC:=$'\033[0m'}"
 
+GIT_IP_GUARD_HOME="$HOME/.local/share/git-ip-guard"
+GIT_IP_GUARD_CONFIG="$HOME/.config/git-ip-guard/config.json"
 GIT_IP_GUARD_CACHE_DIR="${GIT_IP_GUARD_CACHE_DIR:-$HOME/.cache/git-ip-guard}"
 GIT_IP_GUARD_CACHE_TTL="${GIT_IP_GUARD_CACHE_TTL:-300}"
 GIT_IP_GUARD_VERBOSE="${GIT_IP_GUARD_VERBOSE:-0}"
 
 # Expand a leading ~ without using eval.
 expand_tilde() {
-    local path="$1"
-    case "$path" in
-        "~"|"~/"*) echo "${HOME}${path:1}" ;;
-        *) echo "$path" ;;
+    case "$1" in
+        "~"|"~/"*) echo "${HOME}${1:1}" ;;
+        *) echo "$1" ;;
     esac
 }
 
@@ -33,144 +33,166 @@ log_verbose() {
     return 0
 }
 
-# Validate that a string is well-formed JSON containing at least an `ip` field.
-is_valid_ip_json() {
-    local body="$1"
-    [ -z "$body" ] && return 1
-    # Cheap structural check before invoking jq.
-    case "$body" in
-        "{"*"}"*) ;;
-        *) return 1 ;;
-    esac
-    local ip
-    ip=$(printf '%s' "$body" | jq -r '.ip // empty' 2>/dev/null)
-    [ -n "$ip" ]
-}
-
-# Normalize a single provider's response into a unified JSON shape:
-#   { "ip", "country", "country_name", "city", "region", "org", "timezone" }
-# Country is uppercased ISO-3166-1 alpha-2.
-normalize_provider_json() {
-    local provider="$1"
-    local body="$2"
-    printf '%s' "$body" | jq -c --arg provider "$provider" '
-        def upper: if . == null then "" else (. | ascii_upcase) end;
-        def first(a): (a | map(select(. != null and . != "")) | .[0] // "");
-        {
-            ip: (.ip // .query // ""),
-            country: (first([.country_iso, .countryCode, .country_code, .country]) | upper),
-            country_name: (first([.country_name, .country])),
-            city: (.city // ""),
-            region: (first([.region, .region_name, .regionName])),
-            org: (first([.org, .asn_org, .isp, .connection.isp, .connection.org])),
-            timezone: ([(.timezone | if type=="object" then (.id // .name // "") else . end), .time_zone]
-                       | map(select(. != null and . != "")) | .[0] // ""),
-            provider: $provider
-        }
-    ' 2>/dev/null
-}
-
-# Try a single provider. Returns 0 and prints normalized JSON on success.
+# Try one provider. Prints normalized JSON
+#   { ip, country, country_name, city, region, org, timezone, provider }
+# and returns 0 only for a JSON answer with an IP and a two-letter country, so a
+# bot-challenge HTML page or an error body can never be read as a location.
 try_provider() {
-    local name="$1"
-    local url="$2"
-    local body
-    body=$(curl -fsSL --connect-timeout 4 --max-time 8 \
+    local name="$1" url="$2" body
+    body=$(curl -fsSL --proto-redir =https --connect-timeout 4 --max-time 8 \
                 -H 'Accept: application/json' \
-                -H 'User-Agent: git-ip-guard/2.1' \
+                -H 'User-Agent: git-ip-guard/3.0' \
                 "$url" 2>/dev/null) || {
-        log_verbose "provider $name: curl failed"
+        log_verbose "provider $name: request failed"
         return 1
     }
-    if ! is_valid_ip_json "$body"; then
-        log_verbose "provider $name: invalid or non-JSON response"
+    printf '%s' "$body" | jq -ce --arg provider "$name" '
+        def pick(a): (a | map(select(. != null and . != "")) | .[0] // "");
+        {
+            ip: pick([.ip, .query, .ipAddress]),
+            country: (pick([.country_iso, .countryCode, .country_code, .country]) | ascii_upcase),
+            country_name: pick([.country_name, .countryName, .country]),
+            city: pick([.city, .cityName]),
+            region: pick([.region, .region_name, .regionName]),
+            org: pick([.org, .asn_org, .isp, .connection.isp, .connection.org]),
+            timezone: pick([(.timezone | if type == "object" then (.id // .name) else . end), .time_zone, .timeZones[0]?]),
+            provider: $provider
+        }
+        | select(.ip != "" and (.country | test("^[A-Z]{2}$")))
+        # These end up on the terminal: no escape sequences from a provider.
+        | map_values(gsub("[[:cntrl:]]"; ""))
+    ' 2>/dev/null || {
+        log_verbose "provider $name: not JSON, or no usable IP/country"
         return 1
-    fi
-    local normalized
-    normalized=$(normalize_provider_json "$name" "$body") || return 1
-    # Require a country code to consider the result usable.
-    local country
-    country=$(printf '%s' "$normalized" | jq -r '.country // empty')
-    if [ -z "$country" ] || [ ${#country} -ne 2 ]; then
-        log_verbose "provider $name: missing/invalid country"
-        return 1
-    fi
-    printf '%s' "$normalized"
-    return 0
+    }
 }
 
-# Public: fetch IP info, trying multiple providers, with on-disk cache.
-# Cache TTL is 5 minutes by default; set GIT_IP_GUARD_CACHE_TTL=0 to disable.
-# Set IPCHECK_NO_CACHE=1 to bypass cache for one call.
+# Which way traffic leaves this machine. A VPN going up or down changes it, so a
+# cached location is dropped at once instead of being trusted for the rest of the TTL.
+route_fingerprint() {
+    # Whitespace is squeezed because the cache reads this back with `read`, which trims it.
+    if command -v ip >/dev/null 2>&1; then
+        ip route get 1.1.1.1 2>/dev/null | awk 'NR == 1 { $1 = $1; print }'
+    else
+        route -n get 1.1.1.1 2>/dev/null | awk '/gateway:|interface:/ { printf "%s%s", sep, $2; sep = " " }'
+    fi
+}
+
+# Whereabouts, a macOS menu-bar app, publishes each of its location checks here.
+WHEREABOUTS_STATUS="$HOME/Library/Application Support/Whereabouts/status.json"
+
+# Prints the location from Whereabouts' status file, normalized like a provider's answer,
+# when the app is running and its last check is under 3 minutes old and found a country.
+# Whereabouts writes "checking" the moment the network changes, so a dropped VPN can't
+# leave an old answer here; anything else falls back to our own lookup.
+whereabouts_ip_info() {
+    [ -r "$WHEREABOUTS_STATUS" ] || return 1
+    local pid info
+    { read -r pid; IFS= read -r info; } < <(jq -r --argjson now "$(date +%s)" '
+        select((.kind == "safe" or .kind == "violation") and ((.countryCode // "") | test("^[A-Z]{2}$")))
+        | select(($now - .checkedAt) as $age | $age >= 0 and $age < 180)
+        | .pid,
+          ({ ip: (.ip // ""), country: .countryCode, country_name: (.country // ""), city: (.city // ""),
+             region: (.region // ""), org: (.isp // ""), timezone: "", provider: "Whereabouts" }
+           | map_values(gsub("[[:cntrl:]]"; "")) | tojson)
+    ' "$WHEREABOUTS_STATUS" 2>/dev/null)
+    # A file left behind by a crash names a pid that's gone.
+    [ -n "$info" ] && kill -0 "$pid" 2>/dev/null || return 1
+    log_verbose "using Whereabouts' location"
+    printf '%s' "$info"
+}
+
+# Public: fetch IP info: from Whereabouts when it has a fresh answer, otherwise from the
+# providers in turn, with an on-disk cache. The cache lives GIT_IP_GUARD_CACHE_TTL seconds
+# (default 300; 0 disables it) and only while the route out is unchanged.
+# IPCHECK_NO_CACHE=1 skips both Whereabouts and the cache for one call.
 get_ip_info() {
     local cache_file="$GIT_IP_GUARD_CACHE_DIR/last.json"
-    local now
-    now=$(date +%s)
+    local now route
+    [ "${IPCHECK_NO_CACHE:-0}" != "1" ] && whereabouts_ip_info && return 0
 
-    # Cache lookup.
-    if [ "${IPCHECK_NO_CACHE:-0}" != "1" ] && [ "$GIT_IP_GUARD_CACHE_TTL" -gt 0 ] \
-       && [ -f "$cache_file" ] && [ -r "$cache_file" ]; then
-        local mtime age
-        mtime=$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0)
-        age=$((now - mtime))
-        if [ "$age" -lt "$GIT_IP_GUARD_CACHE_TTL" ]; then
-            local cached
-            cached=$(cat "$cache_file" 2>/dev/null)
-            if is_valid_ip_json "$cached"; then
-                log_verbose "using cached IP info (age ${age}s)"
-                printf '%s' "$cached"
-                return 0
-            fi
+    now=$(date +%s)
+    route=$(route_fingerprint)
+
+    # Line 1: "<epoch> <route>", line 2: the normalized JSON.
+    if [ "${IPCHECK_NO_CACHE:-0}" != "1" ] && [ "$GIT_IP_GUARD_CACHE_TTL" -gt 0 ] 2>/dev/null \
+       && [ -r "$cache_file" ]; then
+        local cached_at cached_route cached
+        { read -r cached_at cached_route; IFS= read -r cached; } < "$cache_file"
+        case "$cached_at" in ''|*[!0-9]*) cached_at=0 ;; esac
+        if [ $((now - cached_at)) -lt "$GIT_IP_GUARD_CACHE_TTL" ] && [ "$cached_route" = "$route" ] \
+           && [ -n "$cached" ]; then
+            log_verbose "using cached IP info (age $((now - cached_at))s)"
+            printf '%s' "$cached"
+            return 0
         fi
     fi
 
-    # Provider order can be overridden via GIT_IP_GUARD_PROVIDERS
-    # (space-separated name=url pairs).
     local providers=(
         "ipinfo.io|https://ipinfo.io/json"
         "ipwho.is|https://ipwho.is/"
         "country.is|https://api.country.is/"
-        "freeipapi.com|https://freeipapi.com/api/json"
+        "freeipapi.com|https://free.freeipapi.com/api/v1/json"
     )
-    if [ -n "${GIT_IP_GUARD_PROVIDERS:-}" ]; then
-        # shellcheck disable=SC2206
-        providers=($GIT_IP_GUARD_PROVIDERS)
-    fi
+    # Override with space-separated name|url pairs.
+    [ -n "${GIT_IP_GUARD_PROVIDERS:-}" ] && read -ra providers <<< "$GIT_IP_GUARD_PROVIDERS"
 
-    local entry name url result
+    local entry result
     for entry in "${providers[@]}"; do
-        name="${entry%%|*}"
-        url="${entry#*|}"
-        if result=$(try_provider "$name" "$url"); then
-            mkdir -p "$GIT_IP_GUARD_CACHE_DIR" 2>/dev/null
-            printf '%s' "$result" > "$cache_file" 2>/dev/null
-            chmod 600 "$cache_file" 2>/dev/null
+        if result=$(try_provider "${entry%%|*}" "${entry#*|}"); then
+            # Private to the user, and swapped in whole so a concurrent reader never sees half a file.
+            (
+                umask 077
+                mkdir -p "$GIT_IP_GUARD_CACHE_DIR" &&
+                printf '%s %s\n%s\n' "$now" "$route" "$result" > "$cache_file.$$" &&
+                mv -f "$cache_file.$$" "$cache_file"
+            ) 2>/dev/null
             printf '%s' "$result"
             return 0
         fi
     done
-
     return 1
 }
 
-# Look up flag emoji for an ISO-3166-1 alpha-2 country code.
+# Public: judge IP info ($2) against a config file ($1). Prints one line of fields
+# separated by \x1f (unlike a tab, `read` keeps empty fields):
+#   verdict country city region ip
+# where verdict is allowed, not-allowed, blocked, region:<name> or unverified.
+# Returns 1 when the config is missing or not valid JSON.
+ip_guard_verdict() {
+    printf '%s' "$2" | jq -r --slurpfile cfg "$1" '
+        ($cfg[0]) as $c
+        | (.country // "") as $cc
+        | (if ($c.mode | IN("allowlist", "blocklist", "both")) then $c.mode else "blocklist" end) as $mode
+        | (($c.allowed_countries // []) | map(ascii_upcase)) as $allow
+        | (($c.blocked_countries // []) | map(ascii_upcase)) as $block
+        | ((.region // "") | ascii_downcase) as $r
+        | ((.city // "") | ascii_downcase) as $ci
+        | ([($c.blocked_regions // {})[$cc] // [] | .[] | ascii_downcase
+            | select(. != "" and (. as $b | ($r | contains($b)) or ($ci | contains($b))))] | first) as $hit
+        | (if ($cc | test("^[A-Z]{2}$") | not) then "unverified"
+           elif $mode != "blocklist" and ($allow | length) > 0 and ($allow | any(. == $cc) | not) then "not-allowed"
+           elif $mode != "allowlist" and ($block | any(. == $cc)) then "blocked"
+           elif $hit then "region:\($hit)"
+           else "allowed" end) as $verdict
+        | [$verdict, $cc, .city // "", .region // "", .ip // ""] | join("\u001f")
+    ' 2>/dev/null
+}
+
+# Look up flag emoji for an uppercase ISO-3166-1 alpha-2 country code.
 # Builds the regional-indicator pair as UTF-8 bytes with octal printf escapes,
 # which is portable across bash 3.2 (macOS default) and bash 5+.
 get_flag() {
-    local code="$1"
-    code=$(printf '%s' "$code" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
-    case "$code" in
+    case "$1" in
         [A-Z][A-Z]) ;;
         *) printf '🏳️'; return ;;
     esac
-    local a b b4_a b4_b
-    a=$(printf '%d' "'${code:0:1}")
-    b=$(printf '%d' "'${code:1:1}")
+    local a b
+    a=$(printf '%d' "'${1:0:1}")
+    b=$(printf '%d' "'${1:1:1}")
     # Regional Indicator Symbol Letter A is U+1F1E6, encoded as F0 9F 87 A6.
     # Each subsequent letter shifts the last byte: B = A7, C = A8, ...
-    b4_a=$(printf '%o' $((0xA6 + a - 65)))
-    b4_b=$(printf '%o' $((0xA6 + b - 65)))
-    printf '\360\237\207\'"$b4_a"'\360\237\207\'"$b4_b"
+    printf '\360\237\207\'"$(printf '%o' $((0xA6 + a - 65)))"'\360\237\207\'"$(printf '%o' $((0xA6 + b - 65)))"
 }
 
 # Map ISO code to a human-readable country name. Falls back to the code itself.
@@ -243,20 +265,4 @@ get_country_name() {
         ZM) echo "Zambia" ;; ZW) echo "Zimbabwe" ;;
         *) echo "$1" ;;
     esac
-}
-
-# Locate the shared lib so other scripts can find it from any install location.
-find_ip_common_lib() {
-    local candidates=(
-        "/usr/local/lib/git-ip-guard/ip-common.sh"
-        "$HOME/.git-templates/hooks/ip-common.sh"
-    )
-    local self_dir
-    self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    candidates+=("$self_dir/ip-common.sh" "$self_dir/lib/ip-common.sh" "$self_dir/../scripts/lib/ip-common.sh")
-    local p
-    for p in "${candidates[@]}"; do
-        [ -r "$p" ] && { echo "$p"; return 0; }
-    done
-    return 1
 }

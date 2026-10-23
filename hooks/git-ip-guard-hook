@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# git-ip-guard hook, installed as pre-push, pre-merge-commit, pre-rebase and post-merge.
+# The merge and rebase hooks check only during `git pull`, never for local merges and
+# rebases, so being offline doesn't block local work.
+
+hook=$(basename "$0")
+op=pull
+case "$hook" in
+    pre-push) op=push ;;
+    *) case "${GIT_REFLOG_ACTION:-}" in pull*) ;; *) exit 0 ;; esac ;;
+esac
+
+check="$HOME/.local/share/git-ip-guard/git-ip-check"
+if [ ! -x "$check" ]; then
+    echo "git-ip-guard is not installed; skipping the location check. Reinstall it, or delete .git/hooks/$hook." >&2
+    exit 0
+fi
+
+# post-merge runs after a fast-forward pull has landed, so it can only warn, and it stays quiet when all is well.
+if [ "$hook" = post-merge ]; then
+    out=$("$check" pull 2>&1) && exit 0
+    printf '%s\n' "$out" >&2
+    echo "⚠️  The pull already completed. To undo it: git reset --keep ORIG_HEAD" >&2
+    exit 0
+fi
+
+exec "$check" "$op"

@@ -1,224 +1,90 @@
 #!/bin/bash
 
-# git-ip-check: IP location checker for git hooks.
-# Validates the user's public IP location against an allowlist/blocklist
-# loaded from a JSON config file.
+# git-ip-check: checks the public IP's location against the config. Exit 0 = allowed.
+# Usage: git-ip-check [config.json] [push|pull]
+# The config defaults to ~/.config/git-ip-guard/config.json. v2 per-repo hooks still
+# call this with their own config path first, so that form keeps working.
 
 set -u
 
-# Locate and source the shared library.
-_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_lib_candidates=(
-    "/usr/local/lib/git-ip-guard/ip-common.sh"
-    "$HOME/.git-templates/hooks/ip-common.sh"
-    "$_self_dir/lib/ip-common.sh"
-    "$_self_dir/ip-common.sh"
-)
-_lib_loaded=0
-for _lib in "${_lib_candidates[@]}"; do
-    if [ -r "$_lib" ]; then
-        # shellcheck source=/dev/null
-        . "$_lib"
-        _lib_loaded=1
-        break
-    fi
+for _lib in "$(dirname "${BASH_SOURCE[0]}")/lib/ip-common.sh" "$HOME/.local/share/git-ip-guard/lib/ip-common.sh"; do
+    [ -r "$_lib" ] && break
 done
-if [ "$_lib_loaded" != "1" ]; then
-    echo "Error: ip-common.sh helper library not found. Reinstall git-ip-guard." >&2
+# shellcheck source=lib/ip-common.sh
+. "$_lib" 2>/dev/null || { echo "git-ip-guard: ip-common.sh not found. Reinstall git-ip-guard." >&2; exit 1; }
+
+config="$GIT_IP_GUARD_CONFIG"
+case "${1:-}" in *.json) config="$1"; shift ;; esac
+op="${1:-push}"
+case "$op" in
+    push) Op="Push" ;;
+    pull) Op="Pull" ;;
+    *) echo "Usage: git-ip-check [config.json] [push|pull]" >&2; exit 2 ;;
+esac
+
+# Append one line to the configured log file; failures are silent.
+log_event() {
+    local path
+    path=$(expand_tilde "$(jq -r '.log_file // "~/.git_ip_error.log"' "$config" 2>/dev/null)")
+    mkdir -p "$(dirname "$path")" 2>/dev/null
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$path" 2>/dev/null
+}
+
+if [ "${IPCHECK_BYPASS:-}" = "1" ]; then
+    echo -e "${YELLOW}⚠️  IP check bypassed via IPCHECK_BYPASS${NC}"
+    exit 0
+fi
+
+# ipcheck.global.disable, ipcheck.disable or ipcheck.<op>.disable, in global or repo config.
+disabled=$(git config --type=bool --show-scope --get-regexp '^ipcheck\.' 2>/dev/null | awk -v op="$op" '
+    $3 == "true" && ($2 == "ipcheck.global.disable" || $2 == "ipcheck.disable" || $2 == "ipcheck." op ".disable") {
+        print $2 " (" $1 " config)"; exit
+    }')
+if [ -n "$disabled" ]; then
+    echo -e "${YELLOW}⚠️  IP check disabled by $disabled${NC}"
+    exit 0
+fi
+
+# jq's `//` treats false like null, so compare instead.
+enabled=$(jq -r --arg op "$op" '.["enable_\($op)_check"] != false' "$config" 2>/dev/null) || {
+    echo -e "${RED}Error: config missing or not valid JSON: $config${NC}"
+    exit 1
+}
+if [ "$enabled" = "false" ]; then
+    echo -e "${YELLOW}⚠️  $Op checks are disabled in $config${NC}"
+    exit 0
+fi
+
+if ! ip_info=$(get_ip_info); then
+    echo -e "${RED}Error: Could not detect IP information from any provider.${NC}"
+    echo -e "${RED}Operation blocked because location is unverifiable.${NC}"
+    echo -e "${YELLOW}Set GIT_IP_GUARD_VERBOSE=1 to see provider errors,${NC}"
+    echo -e "${YELLOW}or use IPCHECK_BYPASS=1 git ${op} to bypass.${NC}"
+    log_event "$Op blocked: no IP provider responded"
     exit 1
 fi
 
-# Append a one-line entry to the configured log file. Path is expanded safely
-# without eval; failures are silent.
-log_event() {
-    local config_file="$1"
-    local message="$2"
-    local raw expanded
-    raw=$(jq -r '.log_file // "~/.git_ip_error.log"' "$config_file" 2>/dev/null)
-    [ -z "$raw" ] && raw="$HOME/.git_ip_error.log"
-    expanded=$(expand_tilde "$raw")
-    local dir
-    dir=$(dirname "$expanded")
-    mkdir -p "$dir" 2>/dev/null
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" >> "$expanded" 2>/dev/null
-}
+IFS=$'\x1f' read -r verdict country city region ip <<< "$(ip_guard_verdict "$config" "$ip_info")"
+flag=$(get_flag "$country")
 
-# Validate the config file is well-formed JSON before we trust any of its
-# values. Returns 0 if good, 1 otherwise.
-validate_config() {
-    local config_file="$1"
-    [ -f "$config_file" ] || { echo -e "${RED}Error: Configuration file not found at $config_file${NC}"; return 1; }
-    if ! jq -e . "$config_file" >/dev/null 2>&1; then
-        echo -e "${RED}Error: Configuration file is not valid JSON: $config_file${NC}"
-        return 1
-    fi
-    return 0
-}
-
-# Returns 0 if $1 is in the JSON array stored under $2 in the config.
-# Match is case-insensitive on the country code.
-country_in_list() {
-    local code="$1" list_key="$2" config_file="$3"
-    local match
-    match=$(jq -r --arg code "$code" --arg key "$list_key" '
-        (.[$key] // [])
-        | map(ascii_upcase)
-        | index($code)
-    ' "$config_file" 2>/dev/null)
-    [ "$match" != "null" ] && [ -n "$match" ]
-}
-
-# Determine the operation display name (capitalized).
-op_display() {
-    case "$1" in
-        push) echo "Push" ;;
-        pull) echo "Pull" ;;
-        commit) echo "Commit" ;;
-        *) echo "Operation" ;;
-    esac
-}
-
-# Main check entry point. Arguments:
-#   $1 config-file
-#   $2 operation (push|pull|...)
-#   $3 bypass env var name (default: IPCHECK_BYPASS)
-#   $4 git config key for repo-level disable (default: ipcheck.disable)
-check_ip_location() {
-    local config_file="$1"
-    local operation="${2:-push}"
-    local bypass_var="${3:-IPCHECK_BYPASS}"
-    local repo_config_key="${4:-ipcheck.disable}"
-
-    # 1. Bypass via env var.
-    if [ "${!bypass_var:-}" = "1" ]; then
-        echo -e "${YELLOW}⚠️  IP check bypassed via $bypass_var${NC}"
-        return 0
-    fi
-
-    # 2. Global disables via git config.
-    if [ "$(git config --global --get ipcheck.global.disable 2>/dev/null)" = "true" ]; then
-        echo -e "${YELLOW}⚠️  IP check globally disabled${NC}"
-        return 0
-    fi
-    if [ "$(git config --global --get "ipcheck.${operation}.disable" 2>/dev/null)" = "true" ]; then
-        echo -e "${YELLOW}⚠️  IP check disabled globally for ${operation} operations${NC}"
-        return 0
-    fi
-
-    # 3. Repo-level disables.
-    if git rev-parse --git-dir >/dev/null 2>&1; then
-        if [ "$(git config --get "$repo_config_key" 2>/dev/null)" = "true" ]; then
-            echo -e "${YELLOW}⚠️  IP check disabled for this repository${NC}"
-            return 0
-        fi
-        if [ "$(git config --get "ipcheck.${operation}.disable" 2>/dev/null)" = "true" ]; then
-            echo -e "${YELLOW}⚠️  IP check disabled for ${operation} operations in this repository${NC}"
-            return 0
-        fi
-    fi
-
-    # 4. Validate config.
-    validate_config "$config_file" || return 1
-
-    # 5. Operation-specific enable flag from config.
-    local enabled
-    enabled=$(jq -r ".enable_${operation}_check // true" "$config_file" 2>/dev/null)
-    if [ "$enabled" = "false" ]; then
-        echo -e "${YELLOW}⚠️  ${operation^} operations are disabled in configuration${NC}"
-        return 0
-    fi
-
-    # 6. Fetch IP info via shared lib (multi-provider, cached).
-    local ip_info
-    ip_info=$(get_ip_info)
-    if [ -z "$ip_info" ]; then
-        echo -e "${RED}Error: Could not detect IP information from any provider.${NC}"
+case "${verdict:-}" in
+    allowed)
+        printf '%s✅ Location verified: %s %s - %s allowed%s\n' "$GREEN" "$flag" "$country" "$Op" "$NC"
+        exit 0
+        ;;
+    not-allowed) reason="$flag $country is not on the allowed list" ;;
+    blocked)     reason="access denied from sanctioned country $flag $country" ;;
+    region:*)    reason="sanctioned region ${verdict#region:} ($flag $country)" ;;
+    *)
+        echo -e "${RED}Error: Could not determine the country from the IP lookup.${NC}"
         echo -e "${RED}Operation blocked because location is unverifiable.${NC}"
-        echo -e "${YELLOW}Set GIT_IP_GUARD_VERBOSE=1 to see provider errors,${NC}"
-        echo -e "${YELLOW}or use ${bypass_var}=1 git ${operation} to bypass.${NC}"
-        log_event "$config_file" "$(op_display "$operation") blocked: no IP provider responded"
-        return 1
-    fi
-
-    local country city ip
-    country=$(printf '%s' "$ip_info" | jq -r '.country // empty')
-    city=$(printf '%s' "$ip_info" | jq -r '.city // empty')
-    ip=$(printf '%s' "$ip_info" | jq -r '.ip // empty')
-    [ -z "$city" ] && city="Unknown"
-
-    # 7. Validate country: must be exactly two uppercase letters.
-    if ! [[ "$country" =~ ^[A-Z]{2}$ ]]; then
-        echo -e "${RED}Error: Could not determine country (got '${country}').${NC}"
-        echo -e "${RED}Operation blocked because location is unverifiable.${NC}"
-        log_event "$config_file" "$(op_display "$operation") blocked: invalid country code from provider (ip=${ip:-unknown})"
-        return 1
-    fi
-
-    local flag
-    flag=$(get_flag "$country")
-
-    # 8. Decide using mode: allowlist | blocklist | both (default: blocklist).
-    local mode
-    mode=$(jq -r '.mode // "blocklist"' "$config_file" 2>/dev/null)
-    case "$mode" in allowlist|blocklist|both) ;; *) mode="blocklist" ;; esac
-
-    if [ "$mode" = "allowlist" ] || [ "$mode" = "both" ]; then
-        local has_allow
-        has_allow=$(jq -r '(.allowed_countries // []) | length' "$config_file" 2>/dev/null)
-        if [ "$has_allow" -gt 0 ] && ! country_in_list "$country" "allowed_countries" "$config_file"; then
-            echo -e "${RED}⛔ ${operation^} blocked: $flag $country is not on the allowed list${NC}"
-            echo -e "${YELLOW}IP: ${ip:-unknown}, Location: $flag $city, $country${NC}"
-            log_event "$config_file" "$(op_display "$operation") blocked: $country not in allowlist (ip=${ip:-unknown})"
-            return 1
-        fi
-    fi
-
-    if [ "$mode" = "blocklist" ] || [ "$mode" = "both" ]; then
-        if country_in_list "$country" "blocked_countries" "$config_file"; then
-            echo -e "${RED}⛔ ${operation^} blocked: access denied from sanctioned country $flag $country${NC}"
-            echo -e "${YELLOW}IP: ${ip:-unknown}, Location: $flag $city, $country${NC}"
-            log_event "$config_file" "$(op_display "$operation") blocked from $country (ip=${ip:-unknown})"
-            return 1
-        fi
-    fi
-
-    # 9. Region-level block (e.g., specific Ukrainian regions).
-    local has_regions
-    has_regions=$(jq -r --arg c "$country" '(.blocked_regions[$c] // []) | length' "$config_file" 2>/dev/null)
-    if [ "$has_regions" -gt 0 ]; then
-        local region region_lower city_lower hit
-        region=$(printf '%s' "$ip_info" | jq -r '.region // empty')
-        region_lower=$(printf '%s' "$region" | tr '[:upper:]' '[:lower:]')
-        city_lower=$(printf '%s' "$city"   | tr '[:upper:]' '[:lower:]')
-        hit=$(jq -r --arg c "$country" --arg r "$region_lower" --arg ci "$city_lower" '
-            (.blocked_regions[$c] // [])
-            | map(ascii_downcase)
-            | map(select(. as $b | ($r | contains($b)) or ($ci | contains($b))))
-            | first // empty
-        ' "$config_file" 2>/dev/null)
-        if [ -n "$hit" ]; then
-            echo -e "${RED}⛔ ${operation^} blocked: sanctioned region $hit ($flag $country)${NC}"
-            echo -e "${YELLOW}IP: ${ip:-unknown}, Location: $city, $region, $country${NC}"
-            log_event "$config_file" "$(op_display "$operation") blocked from $country/$hit (ip=${ip:-unknown})"
-            return 1
-        fi
-    fi
-
-    echo -e "${GREEN}✅ Location verified: $flag $country - $(op_display "$operation") allowed${NC}"
-    return 0
-}
-
-# Direct invocation entry point.
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    if [ "$#" -lt 1 ]; then
-        cat <<USAGE
-Usage: $0 <config-file> [operation] [bypass-env-var] [git-config-key]
-Examples:
-  $0 /path/to/ip-check-config.json push
-  $0 /path/to/ip-check-config.json pull IPCHECK_BYPASS ipcheck.disable
-USAGE
+        log_event "$Op blocked: no valid country code from provider"
         exit 1
-    fi
-    check_ip_location "$@"
-    exit $?
-fi
+        ;;
+esac
+# Provider text goes through %s, never echo -e, so it can't smuggle in escapes.
+printf '%s⛔ %s blocked: %s%s\n' "$RED" "$Op" "$reason" "$NC"
+[ "$region" = "$city" ] && region=""
+printf '%sIP: %s, Location: %s %s%s, %s%s\n' "$YELLOW" "${ip:-unknown}" "$flag" "${city:-Unknown}" "${region:+, $region}" "$country" "$NC"
+log_event "$Op blocked from $country: $verdict (ip=${ip:-unknown})"
+exit 1

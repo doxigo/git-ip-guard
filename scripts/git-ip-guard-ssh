@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# git-ip-guard-ssh: installed as git's core.sshCommand. The location check runs before
+# git opens any SSH connection (clone, fetch, pull, push, ls-remote, submodules), in
+# every repo, and --no-verify can't skip it. Then it hands over to the ssh command that
+# was configured before (saved as ipguard.sshCommand), or plain ssh.
+
+# git's last argument is the remote command: git-receive-pack for a push, otherwise a fetch.
+op=pull
+case "${!#}" in git-receive-pack*) op=push ;; esac
+
+# git probes an unfamiliar ssh command with -G to learn its options. That never connects.
+case " $* " in
+    *" -G "*) ;;
+    *)
+        # stdout is git's protocol channel, and a passing check stays quiet.
+        out=$("$(dirname "$0")/git-ip-check" "$op" 2>&1) || { printf '%s\n' "$out" >&2; exit 1; }
+        ;;
+esac
+
+ssh_command=$(git config --global --get ipguard.sshCommand) || ssh_command=ssh
+# Run it the way git runs core.sshCommand: through the shell, with the arguments appended.
+exec sh -c "$ssh_command \"\$@\"" "$ssh_command" "$@"
